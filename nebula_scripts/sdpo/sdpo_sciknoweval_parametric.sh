@@ -38,7 +38,7 @@ export TORCH_WARN_ACCUMULATE_GRAD_STREAM=0
 pip install -e . --no-deps --no-build-isolation --quiet 2>/dev/null || true
 
 python -m verl.trainer.main_ppo \
-    --config-name sdpo \
+    --config-name ${CONFIG_NAME:-sdpo} \
     data.train_batch_size=${TRAIN_BATCH_SIZE} \
     data.train_files="${train_data_path}" \
     data.val_files="${val_data_path}" \
@@ -51,6 +51,8 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.self_distillation.alpha=${ALPHA} \
     actor_rollout_ref.actor.self_distillation.dont_reprompt_on_self_success=${DONT_REPROMPT_ON_SELF_SUCCESS} \
     actor_rollout_ref.actor.self_distillation.include_environment_feedback=False \
+    ${CV_GAMMA:+actor_rollout_ref.actor.self_distillation.cv_gamma=${CV_GAMMA}} \
+    ${BETA_MODE:+actor_rollout_ref.actor.self_distillation.beta_mode=${BETA_MODE}} \
     actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
     actor_rollout_ref.rollout.n=${ROLLOUT_N} \
     actor_rollout_ref.rollout.val_kwargs.n=16 \

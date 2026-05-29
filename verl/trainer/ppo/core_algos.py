@@ -1426,6 +1426,133 @@ def _make_metrics(
     return metrics
 
 
+def compute_cv_sdpo_clean_target(
+    base_topk_log_probs: torch.Tensor,
+    full_topk_log_probs: torch.Tensor,
+    answer_topk_log_probs: torch.Tensor,
+    gamma: float = 0.5,
+    beta_mode: str = "adaptive",
+    beta_fixed: float = 0.5,
+    beta_max: float = 1.0,
+    response_mask: Optional[torch.Tensor] = None,
+    self_distillation_mask: Optional[torch.Tensor] = None,
+    add_tail: bool = True,
+    epsilon: float = 1e-8,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Compute CV-SDPO clean teacher target by subtracting answer-only leakage.
+
+    All inputs are raw top-k log-probs (before add_tail/renorm), shape (batch, seq_len, K).
+    Returns processed clean teacher log-probs (with add_tail or renorm applied).
+
+    The control variate formula:
+        Delta_full = log_q_full - log_p0
+        Delta_ans  = log_q_ans  - log_p0
+        beta_t     = clip(<Delta_full, Delta_ans>_w / (|Delta_ans|^2_w + eps), 0, beta_max)
+        Delta_clean = Delta_full - beta_t * Delta_ans
+        log_q_clean = log_p0 + gamma * Delta_clean
+    """
+    metrics: dict[str, Any] = {}
+
+    # Renormalize raw top-k log-probs to get proper distributions on support
+    # (used for computing weights and metrics)
+    def renorm(logp: torch.Tensor) -> torch.Tensor:
+        return logp - torch.logsumexp(logp, dim=-1, keepdim=True)
+
+    base_norm = renorm(base_topk_log_probs)    # log p0 on support (conditional)
+    full_norm = renorm(full_topk_log_probs)    # log q_full on support (conditional)
+    ans_norm = renorm(answer_topk_log_probs)   # log q_ans on support (conditional)
+
+    # Compute log-prob shifts in RAW space (preserves tail mass information)
+    # raw log-probs = log(true_prob_of_token_k), NOT conditional on top-K
+    delta_full_raw = full_topk_log_probs - base_topk_log_probs  # (batch, seq_len, K)
+    delta_ans_raw = answer_topk_log_probs - base_topk_log_probs  # (batch, seq_len, K)
+
+    # For beta computation, use renormalized (conditional) distributions for proper weighting
+    delta_full = full_norm - base_norm  # (batch, seq_len, K)
+    delta_ans = ans_norm - base_norm    # (batch, seq_len, K)
+
+    # Fisher-style weights: p0 conditional probabilities
+    base_probs = base_norm.exp()  # (batch, seq_len, K)
+
+    if beta_mode == "adaptive":
+        # Weighted inner product: <Delta_full, Delta_ans>_w = sum_i w_i * delta_full_i * delta_ans_i
+        weighted_inner = (base_probs * delta_full * delta_ans).sum(dim=-1)  # (batch, seq_len)
+        weighted_norm_sq = (base_probs * delta_ans * delta_ans).sum(dim=-1)  # (batch, seq_len)
+        beta_t = torch.clamp(weighted_inner / (weighted_norm_sq + epsilon), min=0.0, max=beta_max)  # (batch, seq_len)
+    else:
+        beta_t = torch.full(
+            delta_full.shape[:2], beta_fixed,
+            dtype=delta_full.dtype, device=delta_full.device,
+        )
+
+    # Clean shift in raw space: Delta_clean = Delta_full - beta_t * Delta_ans
+    delta_clean_raw = delta_full_raw - beta_t.unsqueeze(-1) * delta_ans_raw  # (batch, seq_len, K)
+
+    # Construct clean teacher log-probs in RAW space (preserves tail mass):
+    # log_q_clean = log_p0_raw + gamma * Delta_clean_raw
+    # This gives raw top-K log-probs where sum(exp(.)) < 1, suitable for add_tail
+    clean_raw_log_probs = base_topk_log_probs + gamma * delta_clean_raw  # (batch, seq_len, K)
+
+    # Renormalized version for metrics only
+    clean_log_probs = clean_raw_log_probs - torch.logsumexp(clean_raw_log_probs, dim=-1, keepdim=True)
+
+    # Compute diagnostic metrics
+    valid_mask = response_mask  # (batch, seq_len)
+    if self_distillation_mask is not None:
+        valid_mask = valid_mask * self_distillation_mask.unsqueeze(1)
+
+    if valid_mask is not None and valid_mask.sum() > 0:
+        # Cosine similarity between Delta_full and Delta_ans (weighted)
+        weighted_full_norm = torch.sqrt((base_probs * delta_full * delta_full).sum(dim=-1) + epsilon)
+        weighted_ans_norm = torch.sqrt((base_probs * delta_ans * delta_ans).sum(dim=-1) + epsilon)
+        weighted_inner_product = (base_probs * delta_full * delta_ans).sum(dim=-1)
+        cos_sim = weighted_inner_product / (weighted_full_norm * weighted_ans_norm + epsilon)
+
+        # Masked mean
+        valid_count = valid_mask.sum().clamp(min=1.0)
+        metrics["cv_sdpo/cos_full_ans"] = (cos_sim * valid_mask).sum().item() / valid_count.item()
+        metrics["cv_sdpo/beta_mean"] = (beta_t * valid_mask).sum().item() / valid_count.item()
+
+        # Cosine similarity between Delta_clean and Delta_ans (should be near 0)
+        # Use renormalized deltas for consistent metrics
+        delta_clean = delta_full - beta_t.unsqueeze(-1) * delta_ans
+        weighted_clean_norm = torch.sqrt((base_probs * delta_clean * delta_clean).sum(dim=-1) + epsilon)
+        clean_inner = (base_probs * delta_clean * delta_ans).sum(dim=-1)
+        cos_clean_ans = clean_inner / (weighted_clean_norm * weighted_ans_norm + epsilon)
+        metrics["cv_sdpo/cos_clean_ans"] = (cos_clean_ans * valid_mask).sum().item() / valid_count.item()
+
+        # Entropy tracking (on support)
+        def topk_entropy(logp_norm: torch.Tensor) -> torch.Tensor:
+            p = logp_norm.exp()
+            return -(p * logp_norm).sum(dim=-1)
+
+        h_base = topk_entropy(base_norm)
+        h_full = topk_entropy(full_norm)
+        h_ans = topk_entropy(ans_norm)
+        h_clean = topk_entropy(clean_log_probs)
+
+        metrics["cv_sdpo/H_base"] = (h_base * valid_mask).sum().item() / valid_count.item()
+        metrics["cv_sdpo/H_full"] = (h_full * valid_mask).sum().item() / valid_count.item()
+        metrics["cv_sdpo/H_ans"] = (h_ans * valid_mask).sum().item() / valid_count.item()
+        metrics["cv_sdpo/H_clean"] = (h_clean * valid_mask).sum().item() / valid_count.item()
+
+    # Apply add_tail or renorm to match the format expected by distillation loss
+    if add_tail:
+        # Use raw log-probs (sum(exp(.)) < 1) so tail captures remaining mass
+        # Safety: clamp so sum of top-K probs doesn't exceed 1 (which would make tail undefined)
+        log_s = torch.logsumexp(clean_raw_log_probs, dim=-1, keepdim=True)
+        overflow = torch.clamp(log_s + 1e-7, min=0.0)  # how much we exceed the budget
+        clean_raw_clamped = clean_raw_log_probs - overflow  # scale down uniformly if needed
+        log_s = torch.logsumexp(clean_raw_clamped, dim=-1, keepdim=True)
+        log_s = torch.clamp(log_s, max=-1e-7)
+        tail_log = torch.log(-torch.expm1(log_s))
+        result = torch.cat([clean_raw_clamped, tail_log], dim=-1)
+    else:
+        result = clean_log_probs  # renormalized on K tokens
+
+    return result, metrics
+
+
 def compute_self_distillation_loss(
     student_log_probs: torch.Tensor,
     teacher_log_probs: torch.Tensor,
@@ -1439,6 +1566,8 @@ def compute_self_distillation_loss(
     self_distillation_mask: Optional[torch.Tensor] = None,
     loss_agg_mode: str = "token-mean",
     rollout_is_weights: Optional[torch.Tensor] = None,
+    base_teacher_topk_log_probs: Optional[torch.Tensor] = None,
+    answer_teacher_topk_log_probs: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
 
     metrics = {}
@@ -1473,6 +1602,24 @@ def compute_self_distillation_loss(
             else:
                 student_distill_log_probs = renorm_topk_log_probs(student_distill_log_probs)
                 teacher_distill_log_probs = renorm_topk_log_probs(teacher_distill_log_probs)
+
+            # ── CV-SDPO: replace teacher target with clean target ──
+            leakage_decontam_enabled = getattr(self_distillation_config, "leakage_decontamination_enabled", False)
+            if leakage_decontam_enabled and base_teacher_topk_log_probs is not None and answer_teacher_topk_log_probs is not None:
+                clean_teacher_log_probs, cv_metrics = compute_cv_sdpo_clean_target(
+                    base_topk_log_probs=base_teacher_topk_log_probs,
+                    full_topk_log_probs=teacher_topk_log_probs,
+                    answer_topk_log_probs=answer_teacher_topk_log_probs,
+                    gamma=getattr(self_distillation_config, "cv_gamma", 0.5),
+                    beta_mode=getattr(self_distillation_config, "beta_mode", "adaptive"),
+                    beta_fixed=getattr(self_distillation_config, "beta_fixed", 0.5),
+                    beta_max=getattr(self_distillation_config, "beta_max", 1.0),
+                    response_mask=response_mask,
+                    self_distillation_mask=self_distillation_mask,
+                    add_tail=self_distillation_config.distillation_add_tail,
+                )
+                teacher_distill_log_probs = clean_teacher_log_probs
+                metrics.update(cv_metrics)
         else:
             if student_all_log_probs is None or teacher_all_log_probs is None:
                 raise ValueError("full_logit_distillation requires student_all_log_probs and teacher_all_log_probs.")

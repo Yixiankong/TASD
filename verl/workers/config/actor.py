@@ -94,6 +94,21 @@ class SelfDistillationConfig(BaseConfig):
     include_environment_feedback: bool = False
     environment_feedback_only_without_solution: bool = False
 
+    # Leakage decontamination (CV-SDPO)
+    leakage_decontamination_enabled: bool = False
+    leakage_decontamination_mode: str = "control_variate"  # "none", "control_variate"
+    answer_context_source: str = "peer_success"  # "peer_success"
+    cv_gamma: float = 0.5  # clean shift strength
+    beta_mode: str = "adaptive"  # "fixed", "adaptive"
+    beta_fixed: float = 0.5
+    beta_max: float = 1.0
+    stop_gradient_clean_target: bool = True
+    fallback_when_no_success: str = "no_sdpo"  # "no_sdpo", "grpo"
+    answer_only_reprompt_template: str = (
+        "{prompt}\nThe answer is {answer_letter}.\n"
+        "Correctly solve the original question.\n"
+    )
+
     def __post_init__(self):
         if not 0.0 <= self.alpha <= 1.0:
             raise ValueError(f"self_distillation.alpha must be in [0,1], got {self.alpha}")

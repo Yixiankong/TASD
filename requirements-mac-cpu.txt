@@ -1,0 +1,42 @@
+# Mac CPU-only dependencies for local development (no GPU)
+# Based on requirements_flex.txt, excluding GPU-specific packages
+# (vllm, flash-attn, triton, xformers, liger-kernel, etc.)
+
+# PyTorch CPU - installed via conda/pip separately
+# torch
+# torchvision
+
+accelerate
+codetiming
+datasets
+dill
+hydra-core
+numpy
+pandas
+peft
+pyarrow
+pybind11
+pylatexenc
+pre-commit
+ray[default]
+tensordict
+torchdata
+transformers>=4.51.1
+wandb
+packaging
+uvicorn
+fastapi
+math-verify[antlr4_9_3]
+tensorboard
+word2number
+latex2sympy2
+pyzmq
+psutil
+
+# Test dependencies
+pytest
+pytest-asyncio
+pytest-rerunfailures
+
+# Optional
+swanlab

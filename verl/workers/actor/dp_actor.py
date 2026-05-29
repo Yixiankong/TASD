@@ -800,6 +800,14 @@ class DataParallelPPOActor(BasePPOActor):
             select_keys.append("ref_log_prob")
         if self_distillation_enabled:
             select_keys.extend(list(self_distillation_required_keys))
+            # CV-SDPO: include base and answer-only teacher context keys if present
+            cv_sdpo_keys = [
+                "base_teacher_input_ids", "base_teacher_attention_mask", "base_teacher_position_ids",
+                "answer_teacher_input_ids", "answer_teacher_attention_mask", "answer_teacher_position_ids",
+            ]
+            for key in cv_sdpo_keys:
+                if key in data.batch.keys():
+                    select_keys.append(key)
         # Include pre-computed IS weights if present in batch
         # Weights are computed centrally in trainer and added to batch when algorithm.rollout_is=True
         if "rollout_is_weights" in data.batch.keys():
@@ -923,6 +931,52 @@ class DataParallelPPOActor(BasePPOActor):
                         teacher_log_prob = teacher_outputs["log_probs"]
                         teacher_all_logps = teacher_outputs.get("all_logps") if return_all_logps else None
                         teacher_topk_logps = teacher_outputs.get("topk_logps") if distill_topk else None
+
+                        # ── CV-SDPO: base and answer-only teacher forwards ──
+                        base_teacher_topk_logps = None
+                        answer_teacher_topk_logps = None
+                        leakage_decontam_enabled = self_distillation_cfg.get("leakage_decontamination_enabled", False)
+                        has_cv_sdpo_inputs = "base_teacher_input_ids" in model_inputs
+
+                        if leakage_decontam_enabled and has_cv_sdpo_inputs and distill_topk is not None:
+                            # Base teacher forward (original prompt, no privileged context)
+                            base_teacher_inputs = {
+                                "responses": model_inputs["responses"],
+                                "input_ids": model_inputs["base_teacher_input_ids"],
+                                "attention_mask": model_inputs["base_teacher_attention_mask"],
+                                "position_ids": model_inputs["base_teacher_position_ids"],
+                            }
+                            with torch.no_grad():
+                                base_outputs = self._forward_micro_batch(
+                                    base_teacher_inputs,
+                                    temperature=temperature,
+                                    calculate_entropy=False,
+                                    return_all_logps=False,
+                                    distill_topk=None,
+                                    topk_indices=student_topk_indices,
+                                    module=teacher_model,
+                                )
+                            base_teacher_topk_logps = base_outputs.get("topk_logps")
+
+                            # Answer-only teacher forward
+                            answer_teacher_inputs = {
+                                "responses": model_inputs["responses"],
+                                "input_ids": model_inputs["answer_teacher_input_ids"],
+                                "attention_mask": model_inputs["answer_teacher_attention_mask"],
+                                "position_ids": model_inputs["answer_teacher_position_ids"],
+                            }
+                            with torch.no_grad():
+                                answer_outputs = self._forward_micro_batch(
+                                    answer_teacher_inputs,
+                                    temperature=temperature,
+                                    calculate_entropy=False,
+                                    return_all_logps=False,
+                                    distill_topk=None,
+                                    topk_indices=student_topk_indices,
+                                    module=teacher_model,
+                                )
+                            answer_teacher_topk_logps = answer_outputs.get("topk_logps")
+
                         pg_loss, pg_metrics = compute_self_distillation_loss(
                             student_log_probs=log_prob,
                             teacher_log_probs=teacher_log_prob,
@@ -936,6 +990,8 @@ class DataParallelPPOActor(BasePPOActor):
                             self_distillation_mask=self_distillation_mask,
                             loss_agg_mode=loss_agg_mode,
                             rollout_is_weights=rollout_is_weights,
+                            base_teacher_topk_log_probs=base_teacher_topk_logps,
+                            answer_teacher_topk_log_probs=answer_teacher_topk_logps,
                         )
 
                         pg_metrics["self_distillation/empty_target_batch"] = self_distillation_mask.sum().item() == 0

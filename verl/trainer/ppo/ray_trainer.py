@@ -722,6 +722,22 @@ class RayPPOTrainer:
         """Remove <think>...</think> tags and their content from text."""
         return re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL)
 
+    @staticmethod
+    def _extract_answer_letter_from_response(response_text: str) -> Optional[str]:
+        """Extract answer letter (A/B/C/D) from a response using XML <answer> tags.
+
+        Falls back to matching the last standalone A/B/C/D if no XML tag is found.
+        Returns None if no answer can be extracted.
+        """
+        # Try XML format first: <answer>C</answer>
+        match = re.search(r'<answer>\s*([A-D])\s*</answer>', response_text)
+        if match:
+            return match.group(1)
+        # Fallback: last standalone A/B/C/D in text
+        matches = re.findall(r'\b([A-D])\b', response_text)
+        if matches:
+            return matches[-1]
+        return None
 
     def _get_solution(
         self,
@@ -868,6 +884,84 @@ class RayPPOTrainer:
         teacher_attention_mask = torch.cat([teacher_prompt["attention_mask"].to(device), response_mask], dim=1)
         teacher_position_ids = compute_position_id_with_mask(teacher_attention_mask)
 
+        # ── CV-SDPO: build base and answer-only teacher contexts ──
+        leakage_decontam_enabled = self_distillation_cfg.get("leakage_decontamination_enabled", False)
+        result_tensors = {
+            "teacher_input_ids": teacher_input_ids,
+            "teacher_attention_mask": teacher_attention_mask,
+            "teacher_position_ids": teacher_position_ids,
+        }
+
+        if leakage_decontam_enabled:
+            # Extract answer letters from peer successful rollouts
+            answer_letters = []
+            for i in range(batch_size):
+                if solution_strs[i] is not None:
+                    extracted = self._extract_answer_letter_from_response(solution_strs[i])
+                    answer_letters.append(extracted)
+                else:
+                    answer_letters.append(None)
+
+            # Build base messages (original prompt, no privileged context)
+            def _build_base_message(i: int) -> list[dict]:
+                system_messages = batch.non_tensor_batch["raw_prompt"][i][:-1]
+                return system_messages + [{"role": "user", "content": prompt_texts[i]}]
+
+            # Build answer-only messages
+            answer_only_template = self_distillation_cfg.get(
+                "answer_only_reprompt_template",
+                "{prompt}\nThe answer is {answer_letter}.\nCorrectly solve the original question.\n",
+            )
+
+            def _build_answer_only_message(i: int) -> list[dict]:
+                system_messages = batch.non_tensor_batch["raw_prompt"][i][:-1]
+                if answer_letters[i] is not None:
+                    reprompt_text = answer_only_template.format(
+                        prompt=prompt_texts[i],
+                        answer_letter=answer_letters[i],
+                    )
+                else:
+                    # Fallback to original prompt when no answer available
+                    reprompt_text = prompt_texts[i]
+                return system_messages + [{"role": "user", "content": reprompt_text}]
+
+            base_messages = [_build_base_message(i) for i in range(batch_size)]
+            answer_only_messages = [_build_answer_only_message(i) for i in range(batch_size)]
+
+            base_prompt = self.tokenizer.apply_chat_template(
+                base_messages,
+                tokenize=True, return_tensors="pt", return_dict=True,
+                continue_final_message=False, add_generation_prompt=True,
+                enable_thinking=enable_thinking,
+                max_length=self_distillation_cfg.max_reprompt_len,
+                padding=True, truncation=True,
+            )
+            answer_only_prompt = self.tokenizer.apply_chat_template(
+                answer_only_messages,
+                tokenize=True, return_tensors="pt", return_dict=True,
+                continue_final_message=False, add_generation_prompt=True,
+                enable_thinking=enable_thinking,
+                max_length=self_distillation_cfg.max_reprompt_len,
+                padding=True, truncation=True,
+            )
+
+            base_teacher_input_ids = torch.cat([base_prompt["input_ids"].to(device), responses], dim=1)
+            base_teacher_attention_mask = torch.cat([base_prompt["attention_mask"].to(device), response_mask], dim=1)
+            base_teacher_position_ids = compute_position_id_with_mask(base_teacher_attention_mask)
+
+            ans_teacher_input_ids = torch.cat([answer_only_prompt["input_ids"].to(device), responses], dim=1)
+            ans_teacher_attention_mask = torch.cat([answer_only_prompt["attention_mask"].to(device), response_mask], dim=1)
+            ans_teacher_position_ids = compute_position_id_with_mask(ans_teacher_attention_mask)
+
+            result_tensors.update({
+                "base_teacher_input_ids": base_teacher_input_ids,
+                "base_teacher_attention_mask": base_teacher_attention_mask,
+                "base_teacher_position_ids": base_teacher_position_ids,
+                "answer_teacher_input_ids": ans_teacher_input_ids,
+                "answer_teacher_attention_mask": ans_teacher_attention_mask,
+                "answer_teacher_position_ids": ans_teacher_position_ids,
+            })
+
         feedback_only_without_solution = self_distillation_cfg.get("environment_feedback_only_without_solution", False)
         feedback_used = [
             feedback_list[i] is not None and (not feedback_only_without_solution or solution_strs[i] is None)
@@ -891,12 +985,12 @@ class RayPPOTrainer:
             "self_distillation/feedback_used_fraction": num_with_feedback_used / batch_size,
             "self_distillation/reprompt_sample_fraction": self_distillation_mask.float().mean().item(),
         }
-        return DataProto.from_dict(tensors={
-            "teacher_input_ids": teacher_input_ids,
-            "teacher_attention_mask": teacher_attention_mask,
-            "teacher_position_ids": teacher_position_ids,
-            "self_distillation_mask": self_distillation_mask,
-        }), metrics
+        if leakage_decontam_enabled:
+            num_with_answer = sum(1 for a in answer_letters if a is not None)
+            metrics["self_distillation/answer_extracted_fraction"] = num_with_answer / batch_size
+
+        result_tensors["self_distillation_mask"] = self_distillation_mask
+        return DataProto.from_dict(tensors=result_tensors), metrics
         
 
     def _get_gen_batch(self, batch: DataProto) -> DataProto:
