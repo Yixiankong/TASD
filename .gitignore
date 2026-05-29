@@ -138,3 +138,4 @@ outputs
 other_implementation
 Dockerfile.gh200-ofi
 DOCKER_PLAN_GH200.mdxdl_config_*.json
+.aone_copilot/
