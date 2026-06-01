@@ -48,6 +48,10 @@ TRAIN_BATCH_SIZE="32"
 ROLLOUT_N="8"
 CONFIG_NAME="cv_sdpo"
 
+# OOM headroom for CV-SDPO (3× teacher forward pre-computation)
+PPO_MINI_BATCH_SIZE="16"
+GPU_MEMORY_UTIL="0.75"
+
 # =============================================================================
 TOTAL=0
 SUBMITTED=0
@@ -79,7 +83,7 @@ for BETA_MODE in "${BETA_MODES[@]}"; do
             --engine=xdl \
             --queue=${QUEUE} \
             --entry=nebula_scripts/entry.py \
-            --user_params="--script_path=${SCRIPT_PATH} --world_size=${WORLD_SIZE} --job_name=${JOB_NAME} --env=PROJECT_NAME=${PROJECT_NAME} --env=JOB_NAME=${JOB_NAME} --env=DATASET=${DATASET} --env=MODEL_NAME=${MODEL_NAME} --env=LR=${LR} --env=ALPHA=${ALPHA} --env=DONT_REPROMPT_ON_SELF_SUCCESS=${DONT_REPROMPT} --env=TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE} --env=ROLLOUT_N=${ROLLOUT_N} --env=CONFIG_NAME=${CONFIG_NAME} --env=CV_GAMMA=${CV_GAMMA} --env=BETA_MODE=${BETA_MODE}" \
+            --user_params="--script_path=${SCRIPT_PATH} --world_size=${WORLD_SIZE} --job_name=${JOB_NAME} --env=PROJECT_NAME=${PROJECT_NAME} --env=JOB_NAME=${JOB_NAME} --env=DATASET=${DATASET} --env=MODEL_NAME=${MODEL_NAME} --env=LR=${LR} --env=ALPHA=${ALPHA} --env=DONT_REPROMPT_ON_SELF_SUCCESS=${DONT_REPROMPT} --env=TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE} --env=ROLLOUT_N=${ROLLOUT_N} --env=CONFIG_NAME=${CONFIG_NAME} --env=CV_GAMMA=${CV_GAMMA} --env=BETA_MODE=${BETA_MODE} --env=PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE} --env=GPU_MEMORY_UTIL=${GPU_MEMORY_UTIL}" \
             --worker_count=${WORLD_SIZE} \
             --file.cluster_file=${CLUSTER_FILE} \
             --job_name=${JOB_NAME} \
