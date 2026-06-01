@@ -695,6 +695,9 @@ class DataParallelPPOActor(BasePPOActor):
         teacher_topk_lst           = []
         student_topk_lst           = []
         student_topk_indices_lst   = []
+        # CV-SDPO: base and answer-only teacher forwards
+        base_teacher_topk_lst      = []
+        answer_teacher_topk_lst    = []
 
         for micro_batch in micro_batches:
             micro_batch = micro_batch.to(get_device_id())
@@ -738,6 +741,50 @@ class DataParallelPPOActor(BasePPOActor):
                 teacher_log_probs_lst.append(teacher_outputs["log_probs"])
                 teacher_topk_lst.append(teacher_outputs["topk_logps"])
 
+                # ── Step3 (CV-SDPO): base and answer-only teacher forwards ──
+                # 复用 student_topk_indices，与 update_policy 中的逻辑一致
+                has_cv_sdpo = "base_teacher_input_ids" in micro_batch.batch
+                if has_cv_sdpo:
+                    # Base teacher forward (original prompt, no privileged context)
+                    base_teacher_inputs = {
+                        "responses":      micro_batch.batch["responses"],
+                        "input_ids":      micro_batch.batch["base_teacher_input_ids"],
+                        "attention_mask": micro_batch.batch["base_teacher_attention_mask"],
+                        "position_ids":   micro_batch.batch["base_teacher_position_ids"],
+                        "pad_token_id":   pad_token_id,
+                    }
+                    with torch.no_grad():
+                        base_outputs = self._forward_micro_batch(
+                            base_teacher_inputs,
+                            temperature=temperature,
+                            calculate_entropy=False,
+                            return_all_logps=False,
+                            distill_topk=None,
+                            topk_indices=student_topk_indices,
+                            module=teacher_model,
+                        )
+                    base_teacher_topk_lst.append(base_outputs["topk_logps"])
+
+                    # Answer-only teacher forward
+                    answer_teacher_inputs = {
+                        "responses":      micro_batch.batch["responses"],
+                        "input_ids":      micro_batch.batch["answer_teacher_input_ids"],
+                        "attention_mask": micro_batch.batch["answer_teacher_attention_mask"],
+                        "position_ids":   micro_batch.batch["answer_teacher_position_ids"],
+                        "pad_token_id":   pad_token_id,
+                    }
+                    with torch.no_grad():
+                        answer_outputs = self._forward_micro_batch(
+                            answer_teacher_inputs,
+                            temperature=temperature,
+                            calculate_entropy=False,
+                            return_all_logps=False,
+                            distill_topk=None,
+                            topk_indices=student_topk_indices,
+                            module=teacher_model,
+                        )
+                    answer_teacher_topk_lst.append(answer_outputs["topk_logps"])
+
             else:
                 # ── log_ratio模式：只需teacher token log-prob ─────────────
                 teacher_inputs = {
@@ -762,6 +809,9 @@ class DataParallelPPOActor(BasePPOActor):
             result["teacher_topk_log_probs"]   = torch.cat(teacher_topk_lst, dim=0)
             result["student_topk_log_probs"]   = torch.cat(student_topk_lst, dim=0)
             result["student_topk_indices"]      = torch.cat(student_topk_indices_lst, dim=0)
+        if base_teacher_topk_lst:
+            result["base_teacher_topk_log_probs"]    = torch.cat(base_teacher_topk_lst, dim=0)
+            result["answer_teacher_topk_log_probs"]  = torch.cat(answer_teacher_topk_lst, dim=0)
 
         return result
 
@@ -776,13 +826,18 @@ class DataParallelPPOActor(BasePPOActor):
 
         self_distillation_enabled = loss_mode == "sdpo"
         self_distillation_cfg = getattr(self.config, "self_distillation", None)
+        has_precomputed_teacher = "precomputed_teacher_log_probs" in data.batch.keys()
         if self_distillation_enabled:
-            self_distillation_required_keys = {
-                "teacher_input_ids",
-                "teacher_attention_mask",
-                "teacher_position_ids",
-                "self_distillation_mask",
-            }
+            if has_precomputed_teacher:
+                # Plan B: teacher input tensors removed from batch, only need mask + precomputed results
+                self_distillation_required_keys = {"self_distillation_mask", "precomputed_teacher_log_probs"}
+            else:
+                self_distillation_required_keys = {
+                    "teacher_input_ids",
+                    "teacher_attention_mask",
+                    "teacher_position_ids",
+                    "self_distillation_mask",
+                }
             assert self_distillation_required_keys.issubset(set(data.batch.keys())), f"Missing required keys: {self_distillation_required_keys - set(data.batch.keys())}"
 
         select_keys = [
@@ -806,6 +861,15 @@ class DataParallelPPOActor(BasePPOActor):
                 "answer_teacher_input_ids", "answer_teacher_attention_mask", "answer_teacher_position_ids",
             ]
             for key in cv_sdpo_keys:
+                if key in data.batch.keys():
+                    select_keys.append(key)
+            # Plan B: include pre-computed teacher log_probs if present
+            precomputed_keys = [
+                "precomputed_teacher_log_probs", "precomputed_teacher_topk_log_probs",
+                "precomputed_student_topk_log_probs", "precomputed_student_topk_indices",
+                "precomputed_base_teacher_topk_log_probs", "precomputed_answer_teacher_topk_log_probs",
+            ]
+            for key in precomputed_keys:
                 if key in data.batch.keys():
                     select_keys.append(key)
         # Include pre-computed IS weights if present in batch
@@ -878,12 +942,20 @@ class DataParallelPPOActor(BasePPOActor):
                     # all return: (bsz, response_length)
                     return_all_logps = self_distillation_cfg.full_logit_distillation and not self_distillation_cfg.distillation_topk
                     distill_topk = self_distillation_cfg.distillation_topk if self_distillation_cfg.full_logit_distillation else None
+
+                    # Plan B: check if teacher log_probs were pre-computed outside update_actor
+                    # to avoid OOM from 3× teacher FSDP activation coexisting with gradients
+                    has_precomputed = "precomputed_teacher_log_probs" in model_inputs
+                    precomputed_topk_indices = model_inputs.get("precomputed_student_topk_indices") if has_precomputed else None
+
                     outputs = self._forward_micro_batch(
                         model_inputs,
                         temperature=temperature,
                         calculate_entropy=calculate_entropy,
                         return_all_logps=return_all_logps,
                         distill_topk=distill_topk,
+                        # When pre-computed, use same topk indices for index-consistent student gather
+                        topk_indices=precomputed_topk_indices,
                     )
                     log_prob = outputs["log_probs"]
                     entropy = outputs["entropys"] if calculate_entropy else None
@@ -907,47 +979,58 @@ class DataParallelPPOActor(BasePPOActor):
                     rollout_is_weights = model_inputs.get("rollout_is_weights", None)
 
                     if self_distillation_enabled:
-                        teacher_inputs = {
-                            "responses": model_inputs["responses"],
-                            "input_ids": model_inputs["teacher_input_ids"],
-                            "attention_mask": model_inputs["teacher_attention_mask"],
-                            "position_ids": model_inputs["teacher_position_ids"],
-                        }
-                        teacher_model = self.teacher_module or self.actor_module
-                        if teacher_regularization == "trust-region" and (
-                            self.teacher_module is None or self.teacher_module is self.actor_module
-                        ):
-                            raise ValueError("trust-region teacher requires a separate teacher_module in the actor worker.")
-                        with torch.no_grad():
-                            teacher_outputs = self._forward_micro_batch(
-                                teacher_inputs,
-                                temperature=temperature,
-                                calculate_entropy=False,
-                                return_all_logps=return_all_logps,
-                                distill_topk=distill_topk,
-                                topk_indices=student_topk_indices,
-                                module=teacher_model,
-                            )
-                        teacher_log_prob = teacher_outputs["log_probs"]
-                        teacher_all_logps = teacher_outputs.get("all_logps") if return_all_logps else None
-                        teacher_topk_logps = teacher_outputs.get("topk_logps") if distill_topk else None
-
-                        # ── CV-SDPO: base and answer-only teacher forwards ──
-                        base_teacher_topk_logps = None
-                        answer_teacher_topk_logps = None
-                        leakage_decontam_enabled = self_distillation_cfg.get("leakage_decontamination_enabled", False)
-                        has_cv_sdpo_inputs = "base_teacher_input_ids" in model_inputs
-
-                        if leakage_decontam_enabled and has_cv_sdpo_inputs and distill_topk is not None:
-                            # Base teacher forward (original prompt, no privileged context)
-                            base_teacher_inputs = {
+                        if has_precomputed:
+                            # ── Plan B: use pre-computed teacher log_probs ──
+                            # Teacher forward was done in ray_trainer before update_actor,
+                            # so activations don't coexist with gradients/optimizer states.
+                            teacher_log_prob = model_inputs["precomputed_teacher_log_probs"]
+                            teacher_all_logps = None
+                            teacher_topk_logps = model_inputs.get("precomputed_teacher_topk_log_probs")
+                            base_teacher_topk_logps = model_inputs.get("precomputed_base_teacher_topk_log_probs")
+                            answer_teacher_topk_logps = model_inputs.get("precomputed_answer_teacher_topk_log_probs")
+                        else:
+                            # ── Original inline teacher forward (fallback) ──
+                            teacher_inputs = {
                                 "responses": model_inputs["responses"],
-                                "input_ids": model_inputs["base_teacher_input_ids"],
-                                "attention_mask": model_inputs["base_teacher_attention_mask"],
-                                "position_ids": model_inputs["base_teacher_position_ids"],
+                                "input_ids": model_inputs["teacher_input_ids"],
+                                "attention_mask": model_inputs["teacher_attention_mask"],
+                                "position_ids": model_inputs["teacher_position_ids"],
                             }
+                            teacher_model = self.teacher_module or self.actor_module
+                            if teacher_regularization == "trust-region" and (
+                                self.teacher_module is None or self.teacher_module is self.actor_module
+                            ):
+                                raise ValueError("trust-region teacher requires a separate teacher_module in the actor worker.")
                             with torch.no_grad():
-                                base_outputs = self._forward_micro_batch(
+                                teacher_outputs = self._forward_micro_batch(
+                                    teacher_inputs,
+                                    temperature=temperature,
+                                    calculate_entropy=False,
+                                    return_all_logps=return_all_logps,
+                                    distill_topk=distill_topk,
+                                    topk_indices=student_topk_indices,
+                                    module=teacher_model,
+                                )
+                            teacher_log_prob = teacher_outputs["log_probs"]
+                            teacher_all_logps = teacher_outputs.get("all_logps") if return_all_logps else None
+                            teacher_topk_logps = teacher_outputs.get("topk_logps") if distill_topk else None
+
+                            # ── CV-SDPO: base and answer-only teacher forwards ──
+                            base_teacher_topk_logps = None
+                            answer_teacher_topk_logps = None
+                            leakage_decontam_enabled = self_distillation_cfg.get("leakage_decontamination_enabled", False)
+                            has_cv_sdpo_inputs = "base_teacher_input_ids" in model_inputs
+
+                            if leakage_decontam_enabled and has_cv_sdpo_inputs and distill_topk is not None:
+                                # Base teacher forward (original prompt, no privileged context)
+                                base_teacher_inputs = {
+                                    "responses": model_inputs["responses"],
+                                    "input_ids": model_inputs["base_teacher_input_ids"],
+                                    "attention_mask": model_inputs["base_teacher_attention_mask"],
+                                    "position_ids": model_inputs["base_teacher_position_ids"],
+                                }
+                                with torch.no_grad():
+                                    base_outputs = self._forward_micro_batch(
                                     base_teacher_inputs,
                                     temperature=temperature,
                                     calculate_entropy=False,

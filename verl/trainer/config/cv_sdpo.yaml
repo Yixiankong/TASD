@@ -12,6 +12,7 @@ actor_rollout_ref:
     policy_loss:
       loss_mode: sdpo
     self_distillation:
+      alpha: 1.0  # Reverse KL: KL(student || teacher), mode-seeking
       max_reprompt_len: 10240
       is_clip: 2.0
       entropy_weighting: false

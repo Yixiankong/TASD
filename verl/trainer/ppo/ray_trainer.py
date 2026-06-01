@@ -18,6 +18,7 @@ PPO Trainer with Ray-based single controller.
 This trainer supports model-agonistic model initialization with huggingface
 """
 
+import gc
 import json
 import random
 import os
@@ -583,6 +584,12 @@ class RayPPOTrainer:
                     batch.non_tensor_batch["request_id"].tolist(),
                 )
 
+            # Include self-distillation / teacher context info if available
+            sd_keys = ["sd_solution", "sd_feedback", "sd_full_teacher_prompt", "sd_mask", "sd_answer_letter"]
+            for key in sd_keys:
+                if key in batch.non_tensor_batch:
+                    reward_extra_infos_to_dump[key] = batch.non_tensor_batch[key].tolist()
+
             self._dump_generations(
                 inputs=inputs,
                 outputs=outputs,
@@ -990,7 +997,22 @@ class RayPPOTrainer:
             metrics["self_distillation/answer_extracted_fraction"] = num_with_answer / batch_size
 
         result_tensors["self_distillation_mask"] = self_distillation_mask
-        return DataProto.from_dict(tensors=result_tensors), metrics
+
+        # Store readable teacher context info for rollout data dumping
+        result_non_tensors = {
+            "sd_solution": np.array([s if s is not None else "" for s in solution_strs], dtype=object),
+            "sd_feedback": np.array([f if f is not None else "" for f in feedback_list], dtype=object),
+            "sd_full_teacher_prompt": np.array(
+                [msgs[-1]["content"] if msgs else "" for msgs in messages], dtype=object
+            ),
+            "sd_mask": np.array(self_distillation_mask.cpu().tolist()),
+        }
+        if leakage_decontam_enabled:
+            result_non_tensors["sd_answer_letter"] = np.array(
+                [a if a is not None else "" for a in answer_letters], dtype=object
+            )
+
+        return DataProto.from_dict(tensors=result_tensors, non_tensors=result_non_tensors), metrics
         
 
     def _get_gen_batch(self, batch: DataProto) -> DataProto:
@@ -1916,6 +1938,10 @@ class RayPPOTrainer:
         next_step_profile = False
 
         # ── 循环外提前解析，避免每step重复读取 ──────────────────
+        _loss_mode = self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode", "vanilla")
+        is_sdpo = _loss_mode == "sdpo"
+        _self_distillation_cfg = self.config.actor_rollout_ref.actor.get("self_distillation", None)
+
         is_tasd = self.config.algorithm.adv_estimator == AdvantageEstimator.TASD
         if is_tasd:
             _tasd_cfg              = self.config.algorithm.get("tasd", {})
@@ -2482,6 +2508,68 @@ class RayPPOTrainer:
                             critic_output = self._update_critic(batch)
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
+
+                    # ── CV-SDPO Plan B: pre-compute teacher log_probs outside update_actor ──
+                    # Moves 3× teacher FSDP forward from inside micro-batch loop to here,
+                    # so teacher activations don't coexist with gradients/optimizer states (OOM fix).
+                    # Reuses the same compute_teacher_log_probs entry point as TASD.
+                    if is_sdpo and "teacher_input_ids" in batch.batch:
+                        sdpo_fwd_tensors = {
+                            "teacher_input_ids":      batch.batch["teacher_input_ids"],
+                            "teacher_attention_mask":  batch.batch["teacher_attention_mask"],
+                            "teacher_position_ids":    batch.batch["teacher_position_ids"],
+                            "responses":               batch.batch["responses"],
+                            "input_ids":               batch.batch["input_ids"],
+                            "attention_mask":           batch.batch["attention_mask"],
+                            "position_ids":            batch.batch["position_ids"],
+                        }
+                        # Include CV-SDPO base/answer teacher fields if present
+                        for _cv_key in [
+                            "base_teacher_input_ids", "base_teacher_attention_mask", "base_teacher_position_ids",
+                            "answer_teacher_input_ids", "answer_teacher_attention_mask", "answer_teacher_position_ids",
+                        ]:
+                            if _cv_key in batch.batch:
+                                sdpo_fwd_tensors[_cv_key] = batch.batch[_cv_key]
+
+                        sdpo_teacher_fwd_batch = DataProto.from_dict(tensors=sdpo_fwd_tensors)
+                        sdpo_teacher_fwd_batch.meta_info = {
+                            "temperature": self.config.actor_rollout_ref.rollout.temperature,
+                            "micro_batch_size": self.config.actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu,
+                            "pad_token_id": self.tokenizer.pad_token_id,
+                            "distill_topk": (
+                                _self_distillation_cfg.distillation_topk
+                                if _self_distillation_cfg and _self_distillation_cfg.get("full_logit_distillation", True)
+                                else None
+                            ),
+                        }
+
+                        with marked_timer("sdpo_teacher_fwd", timing_raw, color="cyan"):
+                            sdpo_teacher_result = self.actor_rollout_wg.compute_teacher_log_probs(
+                                sdpo_teacher_fwd_batch
+                            )
+
+                        # Merge pre-computed results into batch with "precomputed_" prefix
+                        batch.batch["precomputed_teacher_log_probs"] = sdpo_teacher_result.batch[
+                            "teacher_log_probs_on_response"
+                        ]
+                        for _pc_key in [
+                            "teacher_topk_log_probs", "student_topk_log_probs", "student_topk_indices",
+                            "base_teacher_topk_log_probs", "answer_teacher_topk_log_probs",
+                        ]:
+                            if _pc_key in sdpo_teacher_result.batch:
+                                batch.batch[f"precomputed_{_pc_key}"] = sdpo_teacher_result.batch[_pc_key]
+
+                        # Teacher input tensors are no longer needed (pre-computed results replace them)
+                        # Removing them reduces batch memory during update_actor
+                        for _rm_key in [
+                            "teacher_input_ids", "teacher_attention_mask", "teacher_position_ids",
+                            "base_teacher_input_ids", "base_teacher_attention_mask", "base_teacher_position_ids",
+                            "answer_teacher_input_ids", "answer_teacher_attention_mask", "answer_teacher_position_ids",
+                        ]:
+                            batch.batch.pop(_rm_key, None)
+                        del sdpo_teacher_fwd_batch, sdpo_teacher_result
+                        gc.collect()
+                        torch.cuda.empty_cache()
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:

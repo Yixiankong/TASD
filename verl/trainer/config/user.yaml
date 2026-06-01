@@ -5,7 +5,7 @@ vars:
   dir: /home/${oc.env:USER,user}/SDPO
   task: ${oc.env:TASK,default}
   log_dir: /home/${oc.env:USER,user}/output
-  ckpt_dir:  /home/${oc.env:USER,user}/ttrl_runs/${vars.task}
+  ckpt_dir:  /data/oss_bucket_0/ad/kongyixian.kyx/checkpoints/${vars.task}
 
 data:
   train_files: ["${vars.dir}/${vars.task}/train.parquet"]
