@@ -1,9 +1,10 @@
 #!/bin/bash
 # =============================================================================
-# CV-SDPO 超参扫描 - Nebula 批量提交
+# CV-SDPO γ=1.0 实验 - Nebula 批量提交
 #
-# 参考 nebula_scripts/submit_sdpo_baseline_sweep.sh
-# 使用方式：bash nebula_scripts/submit_cv_sdpo_sweep.sh [--dry-run]
+# 基于 submit_cv_sdpo_sweep.sh，将 γ 从 0.5 提高到 1.0
+# 使用完整的 decontaminated 信号（不再衰减50%）
+# 使用方式：bash nebula_scripts/submit_cv_sdpo_gamma1_sweep.sh [--dry-run]
 # =============================================================================
 
 # ── Nebula 账号配置 ──────────────────────────────────────────────────────
@@ -15,7 +16,7 @@ OSS_ACCESS_KEY="${OSS_ACCESS_KEY:?OSS_ACCESS_KEY not set}"
 OSS_ENDPOINT="oss-cn-hangzhou-zmf.aliyuncs.com"
 OSS_BUCKET="lazada-ai-model"
 CLUSTER_FILE="nebula_scripts/cluster_gpu_4.json"
-SCRIPT_PATH="nebula_scripts/sdpo/cv_sdpo_sciknoweval_parametric.sh"
+SCRIPT_PATH="nebula_scripts/sdpo/sdpo_sciknoweval_parametric.sh"
 CUSTOM_DOCKER_IMAGE="${CUSTOM_DOCKER_IMAGE:-hub.docker.alibaba-inc.com/mdl/notebook_saved:loujieming.ljm_yueqiu_sdpo_env_torch260_20260324155942}"
 PROJECT_NAME="CV_SDPO_v1"
 
@@ -40,7 +41,7 @@ MODEL_NAMES=("Qwen3-8B")
 LRS=("1e-5")
 ALPHAS=("0.5")
 DONT_REPROMPT_LIST=("True")
-CV_GAMMAS=("0.5")
+CV_GAMMAS=("1.0")
 BETA_MODES=("adaptive")
 
 # Fixed parameters
