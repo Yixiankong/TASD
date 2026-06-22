@@ -15,6 +15,7 @@ JOB_NAME="${JOB_NAME:-${SCRIPT_NAME%.*}_${CURRENT_TIME}}"
 
 # ── 路径配置（Nebula OSS 挂载路径）────────────────────────────────────────
 OSS_ROOT="/data/oss_bucket_0/ad/loujieming.ljm"
+LOG_ROOT="${LOG_ROOT:-/data/oss_bucket_0/ad/kongyixian.kyx/TASD}"
 
 # 数据集列表（目前只跑第一个，扩展时直接往数组里加）
 DATA_PATHS=(
@@ -27,7 +28,7 @@ val_data_path="${DATA_PATHS[0]}/test.parquet"
 model_path="${OSS_ROOT}/base_models/Qwen3-8B"
 
 # checkpoint 保存路径
-save_path="${OSS_ROOT}/models/${JOB_NAME}"
+save_path="${LOG_ROOT}/models/${JOB_NAME}"
 
 # ── 训练超参 ──────────────────────────────────────────────────────────────
 # 以下为单实验配置，如需扫描多个超参，请参考 submit_job.sh 的循环逻辑
@@ -58,10 +59,10 @@ export VLLM_USE_V1=1
 export VLLM_LOGGING_LEVEL=WARN
 export WANDB_MODE=offline
 export WANDB_ENTITY=oh-my-team
-export WANDB_DIR="${OSS_ROOT}/logs/wandb_logs"
+export WANDB_DIR="${LOG_ROOT}/logs/wandb"
 export SWANLAB_MODE=cloud
 export SWANLAB_API_KEY="${SWANLAB_API_KEY:-M5oC00EEt8G1wC0XaHkal}"
-export SWANLAB_LOG_DIR="${OSS_ROOT}/logs/swanlab_logs"
+export SWANLAB_LOG_DIR="${LOG_ROOT}/logs/swanlab"
 export TORCH_WARN_ACCUMULATE_GRAD_STREAM=0
 
 # 安装 SDPO 包本身（Nebula 不自动执行 pip install -e .)

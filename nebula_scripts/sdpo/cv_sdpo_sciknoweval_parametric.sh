@@ -7,7 +7,7 @@
 set +xo pipefail
 
 OSS_ROOT="/data/oss_bucket_0/ad/loujieming.ljm"
-LOG_ROOT="${LOG_ROOT:-/data/oss_bucket_0/ad/kongyixian.kyx/${PROJECT_NAME:-CV_SDPO_v1}}"
+LOG_ROOT="${LOG_ROOT:-/data/oss_bucket_0/ad/kongyixian.kyx/TASD}"
 
 # ── 从环境变量读取超参 ────────────────────────────────────────────────
 check_env() { val=$(eval echo "\$$1"); [ -n "$val" ] || { echo "ERROR: $1 is not set. Aborting."; exit 1; }; }

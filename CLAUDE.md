@@ -31,11 +31,13 @@ pip install -e .  # editable mode，已安装
 # 本地训练（通过 wrapper 脚本）
 bash run_local_grpo.sh              # GRPO 基线
 bash run_local_sdpo.sh              # SDPO
-bash run_local_cv_sdpo.sh           # CV-SDPO（1 GPU）
-bash run_local_cv_sdpo_4gpu.sh      # CV-SDPO（4 GPU）
+bash run_local_cv_sdpo.sh           # CV-SDPO（1 GPU, Qwen3-4B 验证用）
+bash run_local_test.sh              # 测试
 
 # 远程提交（Nebula 集群）
-bash nebula_scripts/submit_cv_sdpo_sweep.sh [--dry-run]
+bash nebula_scripts/submit_cv_sdpo_sweep.sh [--dry-run]       # CV-SDPO 4卡
+bash nebula_scripts/submit_sdpo_baseline_sweep.sh [--dry-run] # SDPO baseline 4卡
+bash nebula_scripts/submit_grpo_baseline_sweep.sh [--dry-run] # GRPO baseline 4卡
 ```
 
 训练脚本最终调用 `training/verl_training.sh`，它设置环境变量后执行：
@@ -138,12 +140,27 @@ nebula_scripts/
 ├── cluster_gpu_4.json              ← 4-GPU 集群配置
 ├── submit_*_sweep.sh               ← 各算法的超参扫描提交脚本
 ├── sdpo/
-│   ├── cv_sdpo_sciknoweval_parametric.sh  ← CV-SDPO 实际训练脚本
-│   └── sdpo_sciknoweval_parametric.sh     ← SDPO 实际训练脚本
+│   ├── cv_sdpo_sciknoweval_parametric.sh  ← CV-SDPO 实际训练脚本（独立）
+│   └── sdpo_sciknoweval_parametric.sh     ← SDPO baseline 实际训练脚本
 └── tasd/                           ← TASD 训练脚本
 ```
 
 提交脚本通过 `nebulactl run mdl` 提交，环境变量传递超参数。
+
+**CV-SDPO vs SDPO baseline 的区别**：
+- CV-SDPO 使用独立脚本 `cv_sdpo_sciknoweval_parametric.sh`，显式启用 `leakage_decontamination`
+- CV-SDPO sweep 额外传递 OOM 防护环境变量：`PPO_MINI_BATCH_SIZE=16`（SDPO 默认 32），`GPU_MEMORY_UTIL=0.75`（SDPO 默认 0.85）
+- 这些 env vars 通过 `${VAR:-default}` 语法在 parametric 脚本中消费，SDPO baseline 不传则使用默认值
+
+**关键环境变量**（通过 `--env=` 传递）：
+
+| 变量 | SDPO baseline | CV-SDPO | 说明 |
+|------|:---:|:---:|------|
+| `CONFIG_NAME` | `sdpo` | `cv_sdpo` | Hydra config 名称 |
+| `PPO_MINI_BATCH_SIZE` | 32（默认） | 16 | CV-SDPO 的 3× teacher forward 需更多显存余量 |
+| `GPU_MEMORY_UTIL` | 0.85（默认） | 0.75 | 降低 10% 为 teacher activation 留余量 |
+| `CV_GAMMA` | — | 0.5 | clean shift 强度 |
+| `BETA_MODE` | — | adaptive | 自适应/固定 β |
 
 ### 日志和监控
 
@@ -152,3 +169,36 @@ nebula_scripts/
 - W&B: offline 模式，日志在 `$LOG_ROOT/logs/wandb/`
 - TensorBoard: `$LOG_ROOT/logs/tensorboard/`
 - Best checkpoint 按 `trainer.save_best_metric` 保存
+- Rollout 数据保存在 `$LOG_ROOT/logs/rollout_data/` 下（JSONL 格式，每步一个文件）
+
+### 工具脚本
+
+| 脚本 | 用途 |
+|------|------|
+| `scripts/diagnose.py` | 训练诊断工具 |
+| `scripts/rollout_viewer.py` | Rollout 数据查看器 |
+| `scripts/print_cfg.py` | 打印 Hydra 配置 |
+
+## CV-SDPO 已知问题与分析
+
+### 4 卡并行策略
+- **FSDP FULL_SHARD**：4 GPU 组成 1D device_mesh，参数/optimizer/梯度各切 4 份
+- **vLLM**：`tensor_model_parallel_size=1`，每 GPU 独立推理（与 FSDP 交替使用显存）
+- **共址部署**：Actor + Rollout + Ref/Teacher 在同一组 4 GPU 上（Ray `max_colocate_count=3`）
+- **Teacher CPUOffload**：ref_module FSDP 配置了 `CPUOffload(offload_params=True)`
+
+### Qwen3-8B 每 GPU 内存预算 (FULL_SHARD, 假设 96GB)
+| 项目 | 每 GPU |
+|------|--------|
+| 模型参数 (bf16, sharded) | 3.8 GB |
+| Optimizer (fp32, sharded) | 15.2 GB |
+| 梯度 (bf16, sharded) | 3.8 GB |
+| 基础合计 | **22.8 GB** |
+| 可用于 activation + KV cache | **~73 GB** |
+
+### 实验分析发现（2026-06）
+- **Peer solution 幻觉**：同一题目的不同成功 rollout 可能给出相互矛盾的推理路径（如蛋白质 ID 识别不一致），过程信号不可靠
+- **空洞推理**：部分 peer solution 承认"无法确定答案"但仍输出正确答案，Δ_full 几乎全是泄漏
+- **Answer-only prompt 信号弱**：`"The answer is C."` 对需要专业知识的题目几乎不携带有用信息，导致 `cos_full_ans` 偏低 (~0.34)
+- **clean target 接近 base**：`H_clean ≈ H_base`，说明去污染后蒸馏信号弱
+- **诊断指标参考**：`cos_clean_ans` 应接近 0（残差正交），实际 ~0.15-0.18（偏高，说明 β 不够或 CV 设计需调整）

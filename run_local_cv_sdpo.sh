@@ -9,6 +9,7 @@
 CONFIG_NAME="cv_sdpo"
 
 OSS_ROOT="/data/oss_bucket_0/ad/loujieming.ljm"
+LOG_ROOT="/data/oss_bucket_0/ad/kongyixian.kyx/TASD"
 
 # Default to sciknoweval/biology (MCQ format, compatible with CV-SDPO answer extraction)
 DATASET="sciknoweval/biology"
@@ -40,9 +41,9 @@ export PROJECT_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
 export USER=${USER:-$(whoami)}
 export WANDB_MODE=offline
-export WANDB_DIR=/data/oss_bucket_0/ad/kongyixian.kyx/logs/wandb
-export TENSORBOARD_DIR=/data/oss_bucket_0/ad/kongyixian.kyx/logs/tensorboard
-export SWANLAB_LOG_DIR=/data/oss_bucket_0/ad/kongyixian.kyx/logs/swanlab
+export WANDB_DIR=${LOG_ROOT}/logs/wandb
+export TENSORBOARD_DIR=${LOG_ROOT}/logs/tensorboard
+export SWANLAB_LOG_DIR=${LOG_ROOT}/logs/swanlab
 
 # =============================================================================
 # EXECUTION
@@ -74,9 +75,9 @@ actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
 actor_rollout_ref.rollout.max_num_seqs=256 \
 actor_rollout_ref.rollout.gpu_memory_utilization=0.3 \
 trainer.logger=[console,swanlab,wandb,tensorboard] \
-trainer.rollout_data_dir=/data/oss_bucket_0/ad/kongyixian.kyx/logs/rollout_data/${SUFFIX}"
+trainer.rollout_data_dir=${LOG_ROOT}/logs/rollout_data/${SUFFIX}"
 
-LOG_DIR="/data/oss_bucket_0/ad/kongyixian.kyx/logs/training_logs"
+LOG_DIR="${LOG_ROOT}/logs/training_logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/${EXP_NAME}_$(date +%Y%m%d_%H%M%S).log"
 

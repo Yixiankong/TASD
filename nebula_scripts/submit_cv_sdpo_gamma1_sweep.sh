@@ -16,7 +16,7 @@ OSS_ACCESS_KEY="${OSS_ACCESS_KEY:?OSS_ACCESS_KEY not set}"
 OSS_ENDPOINT="oss-cn-hangzhou-zmf.aliyuncs.com"
 OSS_BUCKET="lazada-ai-model"
 CLUSTER_FILE="nebula_scripts/cluster_gpu_4.json"
-SCRIPT_PATH="nebula_scripts/sdpo/sdpo_sciknoweval_parametric.sh"
+SCRIPT_PATH="nebula_scripts/sdpo/cv_sdpo_sciknoweval_parametric.sh"
 CUSTOM_DOCKER_IMAGE="${CUSTOM_DOCKER_IMAGE:-hub.docker.alibaba-inc.com/mdl/notebook_saved:loujieming.ljm_yueqiu_sdpo_env_torch260_20260324155942}"
 PROJECT_NAME="CV_SDPO_v1"
 
@@ -31,10 +31,6 @@ fi
 # =============================================================================
 DATASETS=(
     "sciknoweval/biology"
-    "sciknoweval/chemistry"
-    "sciknoweval/material"
-    "sciknoweval/physics"
-    "tooluse"
 )
 
 MODEL_NAMES=("Qwen3-8B")

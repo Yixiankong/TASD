@@ -6,6 +6,7 @@
 set +xo pipefail
 
 OSS_ROOT="/data/oss_bucket_0/ad/loujieming.ljm"
+LOG_ROOT="${LOG_ROOT:-/data/oss_bucket_0/ad/kongyixian.kyx/TASD}"
 
 # ── 从环境变量读取超参 ────────────────────────────────────────────────
 check_env() { val=$(eval echo "\$$1"); [ -n "$val" ] || { echo "ERROR: $1 is not set. Aborting."; exit 1; }; }
@@ -21,7 +22,7 @@ check_env MODEL_NAME
 train_data_path="${OSS_ROOT}/datasets/${DATASET}/train.parquet"
 val_data_path="${OSS_ROOT}/datasets/${DATASET}/test.parquet"
 model_path="${OSS_ROOT}/base_models/${MODEL_NAME}"
-save_path="${OSS_ROOT}/models/${JOB_NAME:-sdpo_sweep}"
+save_path="${LOG_ROOT}/models/${JOB_NAME:-sdpo_sweep}"
 
 # ── 环境 ──────────────────────────────────────────────────────────────
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
@@ -32,7 +33,7 @@ export WANDB_MODE=offline
 export WANDB_ENTITY=oh-my-team
 export SWANLAB_MODE=cloud
 export SWANLAB_API_KEY="${SWANLAB_API_KEY:-M5oC00EEt8G1wC0XaHkal}"
-export SWANLAB_LOG_DIR="${OSS_ROOT}/logs/swanlab_logs"
+export SWANLAB_LOG_DIR="${LOG_ROOT}/logs/swanlab"
 export TORCH_WARN_ACCUMULATE_GRAD_STREAM=0
 
 pip install -e . --no-deps --no-build-isolation --quiet 2>/dev/null || true

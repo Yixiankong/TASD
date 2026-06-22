@@ -7,6 +7,7 @@
 set +xo pipefail
 
 OSS_ROOT="/data/oss_bucket_0/ad/loujieming.ljm"
+LOG_ROOT="${LOG_ROOT:-/data/oss_bucket_0/ad/kongyixian.kyx/TASD}"
 
 # ── 从环境变量读取超参（必传，未设置时立即报错退出）─────────────────
 : "${REWARD_TYPE:?REWARD_TYPE is not set}"
@@ -36,7 +37,7 @@ TASD_ALPHA="${TASD_ALPHA:-0.5}"    # teacher_prob_plus_sentence 的混合权重�
 train_data_path="${OSS_ROOT}/datasets/lcb_v6/train.parquet"
 val_data_path="${OSS_ROOT}/datasets/lcb_v6/test.parquet"
 model_path="${OSS_ROOT}/base_models/${MODEL_NAME}"
-save_path="${OSS_ROOT}/models/${JOB_NAME:-tasd_lcb_sweep}"
+save_path="${LOG_ROOT}/models/${JOB_NAME:-tasd_lcb_sweep}"
 
 # ── 环境 ────────────────────────────────────────────────────────────────
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
@@ -47,7 +48,7 @@ export WANDB_MODE=offline
 export WANDB_ENTITY=oh-my-team
 export SWANLAB_MODE=cloud
 export SWANLAB_API_KEY="${SWANLAB_API_KEY:-M5oC00EEt8G1wC0XaHkal}"
-export SWANLAB_LOG_DIR="${OSS_ROOT}/logs/swanlab_logs"
+export SWANLAB_LOG_DIR="${LOG_ROOT}/logs/swanlab"
 export TORCH_WARN_ACCUMULATE_GRAD_STREAM=0
 
 pip install -e . --no-deps --no-build-isolation --quiet 2>/dev/null || true
