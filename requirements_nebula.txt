@@ -18,6 +18,7 @@ pybind11                    # C++ 绑定
 pylatexenc                  # LaTeX 编码
 torchdata                   # 数据加载
 peft                        # LoRA/PEFT 训练
+trl>=1.6.0                  # DPO/KTO 训练框架
 
 # ── 奖励评估（sciknoweval 数学验证需要）───────────────────────────────────────
 math-verify[antlr4_9_3]
