@@ -46,6 +46,14 @@ if [ -n "$RESUME_FROM" ]; then
 fi
 echo "================================================================"
 
+# Activate conda environment
+CONDA_ENV_NAME="dpo_env"
+CONDA_ENV_BIN="/opt/conda/envs/${CONDA_ENV_NAME}/bin"
+if [ -d "${CONDA_ENV_BIN}" ]; then
+    export PATH="${CONDA_ENV_BIN}:${PATH}"
+    echo "Activated conda env: ${CONDA_ENV_NAME}"
+fi
+
 # TRL version check (>= 1.6.0)
 python3 -c "
 import trl
@@ -67,14 +75,6 @@ fi
 
 # Extract model basename for naming
 MODEL_SHORT=$(basename "$MODEL")
-
-# Activate conda environment
-CONDA_ENV_NAME="sdpo_env"
-CONDA_ENV_BIN="/opt/conda/envs/${CONDA_ENV_NAME}/bin"
-if [ -d "${CONDA_ENV_BIN}" ]; then
-    export PATH="${CONDA_ENV_BIN}:${PATH}"
-    echo "Activated conda env: ${CONDA_ENV_NAME}"
-fi
 
 # ── NCCL / 分布式训练环境变量（参考 launch_ray_cluster.sh）─────────────
 export NCCL_DEBUG=WARN                    # 诊断多卡通信问题

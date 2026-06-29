@@ -40,7 +40,7 @@ MODEL_NAMES=(
 LRS=("5e-7")
 BETAS=("0.1")           # 标准 KL 惩罚系数
 LOSS_TYPES=("sigmoid")   # 标准 DPO loss
-THINK_MODES=("think" "nothink")  # 支持 think/nothink 数据 sweep
+THINK_MODES=("nothink")  # 支持 think/nothink 数据 sweep
 
 # 固定参数（4 卡 FSDP 优化）
 BATCH_SIZE="2"           # per_device, 4卡 effective = 2×4×4=32

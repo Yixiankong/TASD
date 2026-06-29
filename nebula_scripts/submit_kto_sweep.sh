@@ -41,7 +41,7 @@ LRS=("5e-7")
 # 固定 Beta=0.1（标准 KL 惩罚系数）
 BETAS=("0.1")
 LOSS_TYPES=("kto")
-THINK_MODES=("think" "nothink")  # 支持 think/nothink 数据 sweep
+THINK_MODES=("nothink")  # 支持 think/nothink 数据 sweep
 
 # KTO 权重（可调，当前使用默认值）
 DESIRABLE_WEIGHT="1.0"

@@ -45,10 +45,10 @@ if __name__ == "__main__":
             print(f"[dpo_kto_entry.py] inject: {k}={v}")
 
     # Activate conda env (same pattern as launch_ray_cluster.sh)
-    conda_bin = "/opt/conda/envs/sdpo_env/bin"
+    conda_bin = "/opt/conda/envs/dpo_env/bin"
     if os.path.isdir(conda_bin):
         env["PATH"] = f"{conda_bin}:{env.get('PATH', '')}"
-        print(f"[dpo_kto_entry.py] Activated conda env: sdpo_env")
+        print(f"[dpo_kto_entry.py] Activated conda env: dpo_env")
 
     # Set PYTHONPATH
     cwd = os.getcwd()

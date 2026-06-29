@@ -45,7 +45,7 @@ SUFFIX=${1:-"local_kto"}
 # =============================================================================
 # SETUP
 # =============================================================================
-source activate sdpo_env 2>/dev/null || conda activate sdpo_env 2>/dev/null || true
+source activate dpo_env 2>/dev/null || conda activate dpo_env 2>/dev/null || true
 
 export PROJECT_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
