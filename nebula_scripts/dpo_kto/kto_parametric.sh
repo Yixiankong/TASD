@@ -18,13 +18,14 @@ echo "REPO_ROOT = ${REPO_ROOT}"
 : "${LOSS_TYPE:?LOSS_TYPE is not set}"
 
 # Optional parameters with defaults (optimized based on local testing)
-GRAD_ACCUM=${GRAD_ACCUM:-4}
-MAX_LENGTH=${MAX_LENGTH:-4096}
+GRAD_ACCUM=${GRAD_ACCUM:-8}
+MAX_LENGTH=${MAX_LENGTH:-8192}
 LOGGING_STEPS=${LOGGING_STEPS:-5}
 SAVE_STEPS=${SAVE_STEPS:-100}
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-5}
 DESIRABLE_WEIGHT=${DESIRABLE_WEIGHT:-1.0}
 UNDESIRABLE_WEIGHT=${UNDESIRABLE_WEIGHT:-1.0}
+WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}
 THINK_MODE=${THINK_MODE:-"nothink"}
 RESUME_FROM=${RESUME_FROM:-""}
 
@@ -57,6 +58,10 @@ if [ -d "${CONDA_ENV_BIN}" ]; then
     export PATH="${CONDA_ENV_BIN}:${PATH}"
     echo "Activated conda env: ${CONDA_ENV_NAME}"
 fi
+export PYTHONNOUSERSITE=1  # prevent ~/.local from shadowing conda env
+
+# Ensure conda env has latest dependencies
+pip install -r "${REPO_ROOT}/requirements_dpo.txt" -q 2>&1 || echo "WARNING: pip install failed, continuing with existing packages"
 
 # TRL version check (>= 1.6.0)
 python3 -c "
@@ -80,6 +85,11 @@ fi
 # Extract model basename for naming
 MODEL_SHORT=$(basename "$MODEL")
 
+# ── 产出落盘到 OSS（Nebula 容器回收后不丢失）──────────────────────
+OSS_ROOT="/data/oss_bucket_0/ad/kongyixian.kyx/TASD"
+CHECKPOINT_DIR="${OSS_ROOT}/checkpoints"
+LOG_ROOT="${OSS_ROOT}/logs"
+
 # ── NCCL / 分布式训练环境变量（参考 launch_ray_cluster.sh）─────────────
 export NCCL_DEBUG=WARN                    # 诊断多卡通信问题
 export NCCL_TIMEOUT=1800                  # 30 分钟超时，防止多卡同步卡死
@@ -87,12 +97,12 @@ export TORCH_WARN_ACCUMULATE_GRAD_STREAM=0 # 抑制无用警告
 export SWANLAB_API_KEY="${SWANLAB_API_KEY:-M5oC00EEt8G1wC0XaHkal}"
 
 export WANDB_MODE=offline
-export WANDB_DIR=${REPO_ROOT}/logs/wandb
-export SWANLAB_LOG_DIR=${REPO_ROOT}/logs/swanlab
-export TENSORBOARD_DIR=${REPO_ROOT}/logs/tensorboard
+export WANDB_DIR=${LOG_ROOT}/wandb
+export SWANLAB_LOG_DIR=${LOG_ROOT}/swanlab
+export TENSORBOARD_DIR=${LOG_ROOT}/tensorboard
 
-# Output directory
-OUTPUT_DIR="${REPO_ROOT}/checkpoints/KTO-${MODEL_SHORT}-${THINK_MODE}-beta${BETA}-lr${LR}-bs${BATCH_SIZE}-${LOSS_TYPE}"
+# Output directory (落盘到 OSS，避免 Nebula 容器回收后丢失)
+OUTPUT_DIR="${OSS_ROOT}/checkpoints/KTO-${MODEL_SHORT}-${THINK_MODE}-beta${BETA}-lr${LR}-bs${BATCH_SIZE}-${LOSS_TYPE}"
 mkdir -p "$OUTPUT_DIR"
 
 # Determine GPU count
@@ -117,6 +127,7 @@ ARGS="--model_name_or_path ${MODEL} \
 --gradient_accumulation_steps ${GRAD_ACCUM} \
 --max_length ${MAX_LENGTH} \
 --warmup_ratio 0.1 \
+--weight_decay ${WEIGHT_DECAY} \
 --output_dir ${OUTPUT_DIR} \
 --use_swanlab \
 --swanlab_project TASD-KTO-Nebula \

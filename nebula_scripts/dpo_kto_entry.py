@@ -44,6 +44,9 @@ if __name__ == "__main__":
             env[k] = v
             print(f"[dpo_kto_entry.py] inject: {k}={v}")
 
+    # Prevent ~/.local from shadowing conda env packages
+    env["PYTHONNOUSERSITE"] = "1"
+
     # Activate conda env (same pattern as launch_ray_cluster.sh)
     conda_bin = "/opt/conda/envs/dpo_env/bin"
     if os.path.isdir(conda_bin):

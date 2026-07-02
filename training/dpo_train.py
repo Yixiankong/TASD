@@ -39,6 +39,8 @@ def parse_args():
     parser.add_argument("--label_smoothing", type=float, default=0.0)
     parser.add_argument("--reference_free", action="store_true",
                         help="Use reference-free DPO (no ref model, saves ~50%% memory)")
+    parser.add_argument("--precompute_ref_log_probs", action="store_true",
+                        help="Pre-compute ref model log probs before training (~50%% speedup)")
 
     # Training
     parser.add_argument("--output_dir", type=str, required=True, help="Output directory")
@@ -175,23 +177,21 @@ def main():
     if missing:
         raise ValueError(f"Missing columns in train data: {missing}. Available: {train_ds.column_names}")
 
-    # Load model
-    logger.info("Loading model...")
-    model_kwargs = {
-        "torch_dtype": torch.bfloat16 if use_bf16 else torch.float32,
-        "trust_remote_code": True,
-    }
-    if use_gc:
-        model_kwargs["use_cache"] = False  # Required for gradient checkpointing
-
-    model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, **model_kwargs)
-    if use_gc:
-        model.gradient_checkpointing_enable()
-
-    # Optional LoRA
-    peft_config = None
+    # Determine model for trainer
+    # Non-LoRA: pass model path string, let trainer handle loading with model_init_kwargs
+    # LoRA: pre-load base model and apply PEFT, trainer creates ref_model from base
     if args.use_lora:
-        from peft import LoraConfig
+        logger.info("Loading model for LoRA...")
+        model_kwargs = {
+            "torch_dtype": torch.bfloat16 if use_bf16 else torch.float32,
+            "trust_remote_code": True,
+        }
+        if use_gc:
+            model_kwargs["use_cache"] = False
+        model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, **model_kwargs)
+        if use_gc:
+            model.gradient_checkpointing_enable()
+        from peft import get_peft_model, LoraConfig
         peft_config = LoraConfig(
             r=args.lora_r,
             lora_alpha=args.lora_alpha,
@@ -200,7 +200,13 @@ def main():
             task_type="CAUSAL_LM",
             bias="none",
         )
+        model = get_peft_model(model, peft_config)
         logger.info(f"LoRA: r={args.lora_r}, alpha={args.lora_alpha}, target={args.lora_target_modules}")
+        model_for_trainer = model
+    else:
+        logger.info(f"Model will be loaded by trainer from: {args.model_name_or_path}")
+        model_for_trainer = args.model_name_or_path
+        peft_config = None
 
     # Build DPOConfig
     report_to = args.report_to.split(",") if args.report_to else ["none"]
@@ -228,6 +234,7 @@ def main():
         beta=args.beta,
         loss_type=args.loss_type,
         label_smoothing=args.label_smoothing,
+        precompute_ref_log_probs=args.precompute_ref_log_probs,
         max_length=args.max_length,
         truncation_mode=args.truncation_mode,
         save_strategy="steps",
@@ -238,6 +245,14 @@ def main():
         remove_unused_columns=False,
         dataloader_pin_memory=True,
         logging_first_step=True,  # 记录第一步，避免长时间无指标
+        # model_init_kwargs 控制 main model 和 ref model 的加载
+        # device_map={"": "cpu"} 让模型先加载到 CPU，FSDP 接管后分片到各 GPU
+        # 避免 device_map="auto" 导致的 FSDP 设备冲突
+        model_init_kwargs={
+            "torch_dtype": torch.bfloat16 if use_bf16 else torch.float32,
+            "trust_remote_code": True,
+            "device_map": {"": "cpu"},  # FSDP: 加载到 CPU，让 FSDP 分片
+        },
     )
 
     # 手动初始化 SwanLab，确保 run 在 trainer 创建前已就绪
@@ -259,7 +274,7 @@ def main():
     # Create trainer
     logger.info("Creating DPOTrainer...")
     trainer = DPOTrainer(
-        model=model,
+        model=model_for_trainer,
         args=dpo_config,
         train_dataset=train_ds,
         eval_dataset=eval_ds,

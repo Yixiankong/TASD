@@ -16,7 +16,7 @@ OSS_BUCKET="lazada-ai-model"
 CLUSTER_FILE="nebula_scripts/cluster_gpu_4.json"
 SCRIPT_PATH="nebula_scripts/dpo_kto/dpo_parametric.sh"
 # 自定义镜像（留空则使用 --algo_name=pytorch260 默认镜像）
-CUSTOM_DOCKER_IMAGE="${CUSTOM_DOCKER_IMAGE:-hub.docker.alibaba-inc.com/mdl/notebook_saved:loujieming.ljm_yueqiu_sdpo_env_torch260_20260324155942}"
+CUSTOM_DOCKER_IMAGE="${CUSTOM_DOCKER_IMAGE:-hub.docker.alibaba-inc.com/mdl/notebook_saved:kongyixian.kyx_kyx_h20_1_20260630114431}"
 PROJECT_NAME="DPO_KTO"
 
 DRY_RUN=false
@@ -38,15 +38,15 @@ MODEL_NAMES=(
 
 # 固定 LR=5e-7（本地 DPO/KTO 单卡验证通过的保守值，8B 模型适配）
 LRS=("5e-7")
-BETAS=("0.1")           # 标准 KL 惩罚系数
-LOSS_TYPES=("sigmoid")   # 标准 DPO loss
+BETAS=("0.2")    # β sweep: 标准 KL 惩罚系数扫描
+LOSS_TYPES=("ipo" "sigmoid")  # sigmoid = 标准 DPO, ipo = 对过拟合更鲁棒
 THINK_MODES=("nothink")  # 支持 think/nothink 数据 sweep
 
 # 固定参数（4 卡 FSDP 优化）
-BATCH_SIZE="2"           # per_device, 4卡 effective = 2×4×4=32
+BATCH_SIZE="1"           # per_device, 4卡 effective = 1×4×8=32
 NUM_EPOCHS="3"
-GRAD_ACCUM="4"
-MAX_LENGTH="4096"        # 本地测试验证：4096 显存可控
+GRAD_ACCUM="8"           # 增大梯度累积提高 effective batch size
+MAX_LENGTH="8192"        # prompt 平均 ~3000 tokens，completion ~100 tokens，留足余量
 LOGGING_STEPS="3"
 SAVE_STEPS="100"
 SAVE_TOTAL_LIMIT="5"

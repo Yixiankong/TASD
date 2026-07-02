@@ -1,0 +1,10 @@
+# DPO/KTO Nebula 运行环境依赖（独立于 SDPO）
+#
+# 只包含 DPO/KTO 训练脚本实际使用的包
+# 已预装（Docker 镜像中）：torch, transformers, datasets
+trl>=1.6.0                  # DPO/KTO 训练框架
+accelerate>=1.0.0           # FSDP 分布式训练
+swanlab                     # 日志
+huggingface_hub>=1.5.0      # transformers 5.12.1 要求
+watchdog                    # swanlab 依赖
+peft                        # LoRA 支持

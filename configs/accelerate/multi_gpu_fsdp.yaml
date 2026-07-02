@@ -10,7 +10,7 @@ fsdp_config:
   fsdp_sharding_strategy: FULL_SHARD
   fsdp_state_dict_type: SHARDED_STATE_DICT
   fsdp_sync_module_states: true
-  fsdp_transformer_layer_cls_to_wrap: Qwen2DecoderLayer
+  fsdp_transformer_layer_cls_to_wrap: Qwen3DecoderLayer
 machine_rank: 0
 mixed_precision: bf16
 num_machines: 1

@@ -20,6 +20,8 @@ torchdata                   # 数据加载
 peft                        # LoRA/PEFT 训练
 accelerate>=1.0.0           # DPO/KTO FSDP 分布式训练
 trl>=1.6.0                  # DPO/KTO 训练框架
+huggingface_hub>=1.5.0      # transformers 5.12.1 要求
+watchdog                    # swanlab 0.8.3 依赖
 
 # ── 奖励评估（sciknoweval 数学验证需要）───────────────────────────────────────
 math-verify[antlr4_9_3]

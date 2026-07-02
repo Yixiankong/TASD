@@ -42,6 +42,9 @@ def parse_args():
     parser.add_argument("--desirable_weight", type=float, default=1.0, help="Weight for desirable examples")
     parser.add_argument("--undesirable_weight", type=float, default=1.0, help="Weight for undesirable examples")
     parser.add_argument("--loss_type", type=str, default="kto", choices=["kto", "kto_pair"])
+    parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--precompute_ref_log_probs", action="store_true",
+                        help="Pre-compute ref model log probs before training (~50%% speedup)")
 
     # Training
     parser.add_argument("--output_dir", type=str, required=True)
@@ -162,19 +165,17 @@ def main():
     assert isinstance(sample["label"], bool), f"label must be bool, got {type(sample['label'])}"
     logger.info("✓ Data format verified")
 
-    # Load model
-    logger.info("Loading model...")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name_or_path,
-        torch_dtype=torch.bfloat16 if args.bf16 else torch.float32,
-        trust_remote_code=True,
-    )
-    logger.info(f"Model loaded: {type(model).__name__}")
-
-    # Setup LoRA if requested
-    peft_config = None
+    # Determine model for trainer
+    # Non-LoRA: pass model path string, let trainer handle loading with model_init_kwargs
+    # LoRA: pre-load base model and apply PEFT, trainer creates ref_model from base
     if args.use_lora:
-        from peft import LoraConfig, TaskType
+        logger.info("Loading model for LoRA...")
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_name_or_path,
+            torch_dtype=torch.bfloat16 if args.bf16 else torch.float32,
+            trust_remote_code=True,
+        )
+        from peft import get_peft_model, LoraConfig, TaskType
         peft_config = LoraConfig(
             r=args.lora_r,
             lora_alpha=args.lora_alpha,
@@ -183,9 +184,18 @@ def main():
             task_type=TaskType.CAUSAL_LM,
             bias="none",
         )
-        logger.info(f"LoRA config: r={args.lora_r}, alpha={args.lora_alpha}")
+        model = get_peft_model(model, peft_config)
+        logger.info(f"LoRA applied: r={args.lora_r}, alpha={args.lora_alpha}")
+        model_for_trainer = model
+    else:
+        logger.info(f"Model will be loaded by trainer from: {args.model_name_or_path}")
+        model_for_trainer = args.model_name_or_path
+        peft_config = None
 
     # KTO config
+    # model_init_kwargs 控制 main model 和 ref model 的加载
+    # device_map={"": "cpu"} 让模型先加载到 CPU，FSDP 接管后分片到各 GPU
+    # 避免 device_map="auto" 导致的 FSDP 设备冲突
     kto_config = KTOConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
@@ -193,6 +203,8 @@ def main():
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         warmup_ratio=args.warmup_ratio,
+        weight_decay=args.weight_decay,
+        precompute_ref_log_probs=args.precompute_ref_log_probs,
         logging_steps=args.logging_steps,
         logging_first_step=True,  # 记录第一步，避免长时间无指标
         save_steps=args.save_steps,
@@ -207,6 +219,11 @@ def main():
         remove_unused_columns=False,
         report_to=["swanlab"] if args.use_swanlab else [],
         run_name=args.swanlab_run_name or f"kto_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        model_init_kwargs={
+            "torch_dtype": torch.bfloat16 if args.bf16 else torch.float32,
+            "trust_remote_code": True,
+            "device_map": {"": "cpu"},  # FSDP: 加载到 CPU，让 FSDP 分片
+        },
     )
 
     # 手动初始化 SwanLab，确保 run 在 trainer 创建前已就绪
@@ -228,7 +245,7 @@ def main():
     # Create trainer
     logger.info("Creating KTO trainer...")
     trainer = KTOTrainer(
-        model=model,
+        model=model_for_trainer,
         ref_model=None,  # Will be created internally
         args=kto_config,
         train_dataset=train_dataset,
