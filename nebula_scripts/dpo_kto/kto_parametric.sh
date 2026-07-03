@@ -75,7 +75,9 @@ print(f'TRL version: {trl.__version__} ✓')
 
 # Data paths (use THINK_MODE to select think/nothink data)
 TRAIN_DATA="${DATASET}/kto_train_${THINK_MODE}.parquet"
-EVAL_DATA="${DATASET}/kto_train_${THINK_MODE}_test.parquet"
+# NOTE: eval disabled — TRL entropy_from_logits materializes full logits during eval,
+# causing OOM on 8B models (seq_len × vocab_size × 4 bytes ≈ 36 GB).
+# EVAL_DATA="${DATASET}/kto_train_${THINK_MODE}_test.parquet"
 
 if [ ! -f "$TRAIN_DATA" ]; then
     echo "ERROR: Training data not found: $TRAIN_DATA"
@@ -116,7 +118,6 @@ echo "Using ${N_GPUS} GPUs"
 # Build training arguments
 ARGS="--model_name_or_path ${MODEL} \
 --train_data_path ${TRAIN_DATA} \
---eval_data_path ${EVAL_DATA} \
 --beta ${BETA} \
 --desirable_weight ${DESIRABLE_WEIGHT} \
 --undesirable_weight ${UNDESIRABLE_WEIGHT} \
@@ -135,7 +136,6 @@ ARGS="--model_name_or_path ${MODEL} \
 --bf16 \
 --gradient_checkpointing \
 --save_steps ${SAVE_STEPS} \
---eval_steps ${SAVE_STEPS} \
 --logging_steps ${LOGGING_STEPS} \
 --save_total_limit ${SAVE_TOTAL_LIMIT} \
 --upload_data_to_swanlab"
