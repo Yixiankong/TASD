@@ -43,6 +43,8 @@ export USER=${USER:-$(whoami)}
 export WANDB_MODE=offline
 export WANDB_DIR=${LOG_ROOT}/logs/wandb
 export TENSORBOARD_DIR=${LOG_ROOT}/logs/tensorboard
+export SWANLAB_MODE=cloud
+export SWANLAB_API_KEY="${SWANLAB_API_KEY:-3sKfdi20C8rYk5JQs0fOJ}"
 export SWANLAB_LOG_DIR=${LOG_ROOT}/logs/swanlab
 
 # =============================================================================

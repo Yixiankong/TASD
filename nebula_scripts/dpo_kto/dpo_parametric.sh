@@ -93,7 +93,7 @@ LOG_ROOT="${OSS_ROOT}/logs"
 export NCCL_DEBUG=WARN                    # 诊断多卡通信问题
 export NCCL_TIMEOUT=1800                  # 30 分钟超时，防止多卡同步卡死
 export TORCH_WARN_ACCUMULATE_GRAD_STREAM=0 # 抑制无用警告
-export SWANLAB_API_KEY="${SWANLAB_API_KEY:-M5oC00EEt8G1wC0XaHkal}"
+export SWANLAB_API_KEY="${SWANLAB_API_KEY:-3sKfdi20C8rYk5JQs0fOJ}"
 
 export WANDB_MODE=offline
 export WANDB_DIR=${LOG_ROOT}/wandb

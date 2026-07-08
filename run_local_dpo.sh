@@ -51,6 +51,8 @@ export PROJECT_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
 export WANDB_MODE=offline
 export WANDB_DIR=${LOG_ROOT}/logs/wandb
+export SWANLAB_MODE=cloud
+export SWANLAB_API_KEY="${SWANLAB_API_KEY:-3sKfdi20C8rYk5JQs0fOJ}"
 export SWANLAB_LOG_DIR=${LOG_ROOT}/logs/swanlab
 export TENSORBOARD_DIR=${LOG_ROOT}/logs/tensorboard
 

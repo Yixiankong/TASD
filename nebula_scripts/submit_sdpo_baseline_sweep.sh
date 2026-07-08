@@ -30,11 +30,11 @@ fi
 # 超参配置（与 run_sdpo_all_local.sh 保持一致）
 # =============================================================================
 DATASETS=(
-    "sciknoweval/biology"
-    "sciknoweval/chemistry"
-    "sciknoweval/material"
+    # "sciknoweval/biology"
+    # "sciknoweval/chemistry"
+    # "sciknoweval/material"
     "sciknoweval/physics"
-    "tooluse"    # 如未上传到 OSS，注释此行
+    # "tooluse"    # 如未上传到 OSS，注释此行
 )
 
 MODEL_NAMES=(

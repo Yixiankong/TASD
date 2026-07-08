@@ -68,7 +68,7 @@ export VLLM_LOGGING_LEVEL=WARN
 export TORCH_WARN_ACCUMULATE_GRAD_STREAM=0
 
 # 5. SwanLab 配置（fallback 到硬编码 key，确保 Ray worker 进程继承）
-export SWANLAB_API_KEY="${SWANLAB_API_KEY:-M5oC00EEt8G1wC0XaHkal}"
+export SWANLAB_API_KEY="${SWANLAB_API_KEY:-3sKfdi20C8rYk5JQs0fOJ}"
 
 echo "PYTHONPATH = $PYTHONPATH"
 

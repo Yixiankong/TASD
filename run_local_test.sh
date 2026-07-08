@@ -35,6 +35,10 @@ export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
 # Define USER for Hydra config (required by user.yaml)
 export USER=${USER:-$(whoami)}
 
+export SWANLAB_MODE=cloud
+export SWANLAB_API_KEY="${SWANLAB_API_KEY:-3sKfdi20C8rYk5JQs0fOJ}"
+export SWANLAB_LOG_DIR=${LOG_ROOT}/logs/swanlab
+
 # Optional: Run setup commands if needed (uncomment if necessary)
 # pip install word2number latex2sympy2 math-verify[antlr4_9_3]==0.8.0
 # pip install -e $PROJECT_ROOT

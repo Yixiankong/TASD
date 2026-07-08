@@ -30,10 +30,10 @@ fi
 # 超参配置（尽量多覆盖 EW 相关维度）
 # =============================================================================
 DATASETS=(
-    "sciknoweval/biology"
+    # "sciknoweval/biology"
     # "sciknoweval/chemistry"
     # "sciknoweval/material"
-    # "sciknoweval/physics"
+    "sciknoweval/physics"
 )
 
 MODEL_NAMES=("Qwen3-8B")

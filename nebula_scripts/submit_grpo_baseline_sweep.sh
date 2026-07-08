@@ -31,11 +31,11 @@ fi
 # =============================================================================
 # DATASET 为 OSS datasets/ 下的相对路径，MODEL_NAME 为 base_models/ 下的目录名
 DATASETS=(
-    "sciknoweval/biology"
-    "sciknoweval/chemistry"
-    "sciknoweval/material"
+    # "sciknoweval/biology"
+    # "sciknoweval/chemistry"
+    # "sciknoweval/material"
     "sciknoweval/physics"
-    "tooluse"    # 如未上传到 OSS，注释此行
+    # "tooluse"    # 如未上传到 OSS，注释此行
 )
 
 MODEL_NAMES=(

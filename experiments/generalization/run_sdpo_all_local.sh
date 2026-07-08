@@ -12,7 +12,7 @@ export VLLM_LOGGING_LEVEL=WARN
 export TENSORBOARD_DIR=/home/loujieming.ljm/SDPO/logs/tensorboard_logs
 
 export SWANLAB_MODE=cloud
-export SWANLAB_API_KEY="${SWANLAB_API_KEY:?SWANLAB_API_KEY not set}"
+export SWANLAB_API_KEY="${SWANLAB_API_KEY:-3sKfdi20C8rYk5JQs0fOJ}"
 export SWANLAB_LOG_DIR=/home/loujieming.ljm/SDPO/logs/swanlab_logs
 
 export TORCH_WARN_ACCUMULATE_GRAD_STREAM=0
