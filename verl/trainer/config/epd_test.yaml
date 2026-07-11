@@ -1,0 +1,36 @@
+defaults:
+  - ppo_trainer
+  - _self_
+
+# EPD 测试配置
+actor_rollout_ref:
+  model:
+    path: Qwen/Qwen2.5-0.5B-Instruct
+
+  actor:
+    ppo_mini_batch_size: 2
+    policy_loss:
+      loss_mode: sdpo
+
+    self_distillation:
+      entropy_weighting: true
+      entropy_weighting_version: "v5_epd"
+      epd_lambda: 0.8
+      epd_tau: 0.5
+      distillation_topk: 100
+
+data:
+  train_batch_size: 2
+  val_batch_size: 2
+
+trainer:
+  total_epochs: 1
+  total_training_steps: 2
+  val_freq: 1
+  save_freq: -1
+  test_freq: -1
+
+algorithm:
+  adv_estimator: grpo
+  gamma: 1.0
+  lam: 1.0

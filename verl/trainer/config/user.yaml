@@ -65,4 +65,4 @@ trainer:
   max_actor_ckpt_to_keep: 1
   total_epochs: 30
   default_local_dir: ${vars.ckpt_dir}/${trainer.experiment_name}  # experiment_name needs to be a unique identifier
-  logger: ["console", "swanlab", "wandb", "tensorboard"]
+  logger: ["console", "swanlab", "tensorboard"]

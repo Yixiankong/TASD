@@ -1256,6 +1256,23 @@ def agg_loss(
 
     return loss
 
+
+def _compute_v2sqrt_joint_score(teacher_logp, teacher_log_prob_on_student, teacher_entropy):
+    """Compute v2sqrt joint_score for fallback use.
+
+    Used when v4/v5_epd cannot run (missing student_topk_log_probs).
+    """
+    teacher_prob_on_student = teacher_log_prob_on_student.exp()
+    K = teacher_logp.shape[-1]
+    H_max = torch.log(torch.tensor(
+        K, dtype=teacher_entropy.dtype, device=teacher_entropy.device
+    )).clamp(min=1e-6)
+    H_normalized = teacher_entropy / H_max
+    teacher_certainty = 1.0 - H_normalized
+    student_wrong = 1.0 - teacher_prob_on_student
+    return torch.sqrt(teacher_certainty * student_wrong + 1e-8)
+
+
 def apply_teacher_entropy_weighting(
     per_token_loss: torch.Tensor,
     teacher_topk_log_probs,
@@ -1264,9 +1281,44 @@ def apply_teacher_entropy_weighting(
     loss_mask: torch.Tensor,
     temperature: float = 1.0,
     use_topk: bool = True,
-    weighting_version: str = "v2sqrt",   # 新增：v1 / v2 / v2sqrt / v4
-    student_topk_log_probs=None,         # 新增：v4需要
+    weighting_version: str = "v2sqrt",
+    student_topk_log_probs=None,
+    self_distillation_config=None,
 ):
+    """Apply per-token entropy-based weighting to distillation loss.
+
+    Supports multiple weighting versions:
+    - v1: Teacher certainty (negative entropy)
+    - v1_norm: Normalized teacher certainty
+    - v2: Teacher certainty × student wrongness
+    - v2sqrt: Geometric mean of v2 factors
+    - v4: Information gain (H_student - H_teacher), up-weights via softmax
+    - v5_epd: Entropy-Preservation Distillation (EPD)
+        Down-weights tokens where teacher collapsed entropy relative to student,
+        protecting deliberation positions. Uses sigmoid (not softmax) for
+        independent per-token weighting. Key parameters:
+        - epd_lambda (float): Max protection strength, ∈ [0, 1]. Default 0.8.
+        - epd_tau (float): Sigmoid temperature. Default 0.5.
+        When collapse_risk = 0 (teacher not more certain than student),
+        weight = 1.0 (no protection).
+
+    Args:
+        per_token_loss: (B, T) per-token KL distillation loss.
+        teacher_topk_log_probs: (B, T, K) teacher log-probs on top-K positions.
+        teacher_all_log_probs: (B, T, V) teacher log-probs on full vocab (optional).
+        teacher_log_prob_on_student: (B, T) teacher log-prob on student's chosen token.
+        loss_mask: (B, T) binary mask for valid tokens.
+        temperature: Softmax temperature for v1-v4 (unused by v5_epd).
+        use_topk: Whether to use top-K teacher log-probs.
+        weighting_version: One of "v1", "v1_norm", "v2", "v2sqrt", "v4", "v5_epd".
+        student_topk_log_probs: (B, T, K) student log-probs on top-K (required for v4/v5_epd).
+        self_distillation_config: Config object with epd_lambda/epd_tau (required for v5_epd).
+    """
+    # EPD early return flag: v5_epd computes weights in no_grad,
+    # but must multiply per_token_loss OUTSIDE no_grad to preserve gradients
+    epd_confidence_weights = None
+    epd_metrics = None
+
     with torch.no_grad():
         if use_topk and teacher_topk_log_probs is not None:
             teacher_logp = teacher_topk_log_probs
@@ -1284,10 +1336,10 @@ def apply_teacher_entropy_weighting(
             print("[EW] teacher_entropy has nan/inf, skipping weighting")
             return per_token_loss, _make_metrics(teacher_entropy, loss_mask)
 
-        # ── 2. 根据版本计算joint_score ────────────
-        student_entropy = None  # V4专属，提前初始化避免作用域问题
-        info_gain = None        # V4专属，提前初始化避免作用域问题
-        teacher_prob_on_student = None  # V2/V2sqrt专属
+        # ── 2. 根据版本计算权重 ──────────────────
+        student_entropy = None
+        info_gain = None
+        teacher_prob_on_student = None
 
         if weighting_version == "v1":
             # 原V1版本：只用teacher熵
@@ -1331,16 +1383,7 @@ def apply_teacher_entropy_weighting(
             # 衡量feedback在该位置减少了多少不确定性
             if student_topk_log_probs is None:
                 print("[EW] v4 requires student_topk_log_probs, falling back to v2sqrt")
-                weighting_version = "v2sqrt"
-                teacher_prob_on_student = teacher_log_prob_on_student.exp()
-                K = teacher_logp.shape[-1]
-                H_max = torch.log(torch.tensor(
-                    K, dtype=teacher_entropy.dtype, device=teacher_entropy.device
-                )).clamp(min=1e-6)
-                H_normalized = teacher_entropy / H_max
-                teacher_certainty = 1.0 - H_normalized
-                student_wrong = 1.0 - teacher_prob_on_student
-                joint_score = torch.sqrt(teacher_certainty * student_wrong + 1e-8)
+                joint_score = _compute_v2sqrt_joint_score(teacher_logp, teacher_log_prob_on_student, teacher_entropy)
             else:
                 student_probs = student_topk_log_probs.exp()
                 safe_student_logp = torch.clamp(student_topk_log_probs, min=-100.0)
@@ -1351,30 +1394,86 @@ def apply_teacher_entropy_weighting(
                 # 只保留正增益，负值clamp到0（feedback带来噪声的位置权重为0）
                 joint_score = info_gain.clamp(min=0)
 
+        elif weighting_version == "v5_epd":
+            # V5-EPD: Entropy-Preservation Distillation (熵保护蒸馏)
+            # 直接度量 teacher 比 student 确定多少，在思考位置降低蒸馏权重以保留探索能力
+            if student_topk_log_probs is None:
+                print("[EW] v5_epd requires student_topk_log_probs, falling back to v2sqrt")
+                joint_score = _compute_v2sqrt_joint_score(teacher_logp, teacher_log_prob_on_student, teacher_entropy)
+            else:
+                # 计算 student 熵
+                student_probs = student_topk_log_probs.exp()
+                safe_student_logp = torch.clamp(student_topk_log_probs, min=-100.0)
+                student_entropy = -(student_probs * safe_student_logp).sum(dim=-1)  # (B, T)
+
+                # 坍缩风险：teacher 比 student 确定多少
+                collapse_risk = torch.clamp(student_entropy - teacher_entropy, min=0)  # ≥0
+                normalized_collapse = collapse_risk / (student_entropy + 1e-8)
+                normalized_collapse = torch.clamp(normalized_collapse, max=1.0)  # ∈ [0, 1]
+
+                # 从配置读取 EPD 超参
+                epd_lambda = getattr(self_distillation_config, 'epd_lambda', 0.8) if self_distillation_config is not None else 0.8
+                epd_tau = getattr(self_distillation_config, 'epd_tau', 0.5) if self_distillation_config is not None else 0.5
+
+                # Sigmoid 调制（不是 softmax！）
+                # w_distill = 1 - λ * sigmoid(normalized_collapse / τ)
+                sigmoid_weights = 1.0 - epd_lambda * torch.sigmoid(normalized_collapse / epd_tau)
+
+                # 关键修复：当 collapse_risk = 0 时（teacher 不比 student 更确定），完全不保护
+                # sigmoid(0) = 0.5 会导致错误的保护，所以用 where 显式处理
+                epd_confidence_weights = torch.where(
+                    collapse_risk > 0,
+                    sigmoid_weights,
+                    torch.ones_like(sigmoid_weights)  # w_distill = 1，完全不保护
+                )
+
+                # 应用 loss_mask
+                epd_confidence_weights = epd_confidence_weights.masked_fill(loss_mask == 0, 0.0)
+
+                if torch.isnan(epd_confidence_weights).any():
+                    print("[EW] v5_epd confidence_weights has nan, skipping weighting")
+                    return per_token_loss, _make_metrics(teacher_entropy, loss_mask)
+
+                epd_metrics = _make_epd_metrics(
+                    teacher_entropy=teacher_entropy,
+                    student_entropy=student_entropy,
+                    collapse_risk=collapse_risk,
+                    normalized_collapse=normalized_collapse,
+                    loss_mask=loss_mask,
+                )
+                # 不在 no_grad 内返回——在外部做乘法以保持梯度
+                # joint_score 不设置，走 EPD early return 路径
+
         else:
             raise ValueError(f"[EW] Unknown weighting_version: {weighting_version}")
 
-        # ── 3. 统一的softmax加权流程 ──────────────
-        joint_score = joint_score.masked_fill(loss_mask == 0, -1e9)
-        confidence_weights = torch.softmax(joint_score / temperature, dim=-1)
+        # ── 3. 统一的softmax加权流程 (v1-v4) ──────
+        # v5_epd 成功路径跳过此块（epd_confidence_weights 已设置）
+        if epd_confidence_weights is None:
+            joint_score = joint_score.masked_fill(loss_mask == 0, -1e9)
+            confidence_weights = torch.softmax(joint_score / temperature, dim=-1)
 
-        seq_lengths = loss_mask.sum(dim=-1, keepdim=True).clamp(min=1)
-        confidence_weights = confidence_weights * seq_lengths
-        confidence_weights = torch.clamp(confidence_weights, max=10.0)
+            seq_lengths = loss_mask.sum(dim=-1, keepdim=True).clamp(min=1)
+            confidence_weights = confidence_weights * seq_lengths
+            confidence_weights = torch.clamp(confidence_weights, max=10.0)
 
-        if torch.isnan(confidence_weights).any():
-            print("[EW] confidence_weights has nan, skipping weighting")
-            return per_token_loss, _make_metrics(teacher_entropy, loss_mask)
+            if torch.isnan(confidence_weights).any():
+                print("[EW] confidence_weights has nan, skipping weighting")
+                return per_token_loss, _make_metrics(teacher_entropy, loss_mask)
 
-        # ── 4. 构建metrics ────────────────────────
-        ew_metrics = _make_metrics(
-            teacher_entropy=teacher_entropy,
-            loss_mask=loss_mask,
-            teacher_prob_on_student=teacher_prob_on_student,  # v2/v2sqrt时非None，其余为None
-            student_entropy=student_entropy,                  # v4时非None，其余为None
-            info_gain=info_gain,                              # v4时非None，其余为None
-        )
+            # ── 4. 构建metrics ────────────────────
+            ew_metrics = _make_metrics(
+                teacher_entropy=teacher_entropy,
+                loss_mask=loss_mask,
+                teacher_prob_on_student=teacher_prob_on_student,  # v2/v2sqrt时非None，其余为None
+                student_entropy=student_entropy,                  # v4时非None，其余为None
+                info_gain=info_gain,                              # v4时非None，其余为None
+            )
+        else:
+            confidence_weights = epd_confidence_weights
+            ew_metrics = epd_metrics
 
+    # 在 no_grad 外部做乘法，保持 per_token_loss 的梯度链
     return per_token_loss * confidence_weights, ew_metrics
 
 
@@ -1422,6 +1521,50 @@ def _make_metrics(
         else:
             metrics["sdpo/info_gain_mean"] = 0.0
             metrics["sdpo/info_gain_positive_ratio"] = 0.0
+
+    return metrics
+
+
+def _make_epd_metrics(
+    teacher_entropy,
+    student_entropy,
+    collapse_risk,
+    normalized_collapse,
+    loss_mask,
+):
+    """EPD 专用指标函数。
+
+    始终返回所有 4 个 key（默认 0.0），确保多 worker 合并时
+    DataProto.concat → list_of_dict_to_dict_of_list 不产生
+    inhomogeneous 数组。
+    """
+    valid_mask = loss_mask == 1
+    metrics = {
+        "epd/student_entropy_mean": 0.0,
+        "epd/teacher_entropy_mean": 0.0,
+        "epd/collapse_risk_mean": 0.0,
+        "epd/normalized_collapse_mean": 0.0,
+    }
+
+    # Student 熵（监控自调节）
+    valid_student_entropy = student_entropy[valid_mask]
+    if valid_student_entropy.numel() > 0:
+        metrics["epd/student_entropy_mean"] = valid_student_entropy.mean().item()
+
+    # Teacher 熵
+    valid_teacher_entropy = teacher_entropy[valid_mask]
+    if valid_teacher_entropy.numel() > 0:
+        metrics["epd/teacher_entropy_mean"] = valid_teacher_entropy.mean().item()
+
+    # 坍缩风险
+    valid_collapse_risk = collapse_risk[valid_mask]
+    if valid_collapse_risk.numel() > 0:
+        metrics["epd/collapse_risk_mean"] = valid_collapse_risk.mean().item()
+
+    # 归一化坍缩风险（保护分数的核心）
+    valid_normalized_collapse = normalized_collapse[valid_mask]
+    if valid_normalized_collapse.numel() > 0:
+        metrics["epd/normalized_collapse_mean"] = valid_normalized_collapse.mean().item()
 
     return metrics
 
@@ -1686,8 +1829,9 @@ def compute_self_distillation_loss(
             loss_mask=loss_mask,
             temperature=entropy_temperature,
             use_topk=use_topk,
-            weighting_version=entropy_weighting_version,   # 新增
-            student_topk_log_probs=student_topk_log_probs, # 新增，V4需要
+            weighting_version=entropy_weighting_version,
+            student_topk_log_probs=student_topk_log_probs,
+            self_distillation_config=self_distillation_config,  # v5_epd 需要
         )
         metrics.update(ew_metrics)
 

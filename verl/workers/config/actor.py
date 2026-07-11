@@ -109,6 +109,10 @@ class SelfDistillationConfig(BaseConfig):
         "Correctly solve the original question.\n"
     )
 
+    # EPD (Entropy-Preservation Distillation) 熵保护蒸馏
+    epd_lambda: float = 0.8  # 最大保护强度，∈ [0, 1]
+    epd_tau: float = 0.5     # Sigmoid 温度，越小保护越尖锐
+
     def __post_init__(self):
         if not 0.0 <= self.alpha <= 1.0:
             raise ValueError(f"self_distillation.alpha must be in [0,1], got {self.alpha}")

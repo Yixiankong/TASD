@@ -76,7 +76,7 @@ actor_rollout_ref.rollout.val_kwargs.n=16 \
 actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
 actor_rollout_ref.rollout.max_num_seqs=256 \
 actor_rollout_ref.rollout.gpu_memory_utilization=0.3 \
-trainer.logger=[console,swanlab,wandb,tensorboard] \
+trainer.logger=[console,swanlab,tensorboard] \
 trainer.rollout_data_dir=${LOG_ROOT}/logs/rollout_data/${SUFFIX}"
 
 LOG_DIR="${LOG_ROOT}/logs/training_logs"

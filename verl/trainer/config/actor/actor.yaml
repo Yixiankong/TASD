@@ -127,6 +127,15 @@ self_distillation:
   # IS clip for loss; null disables IS weighting
   is_clip: 2
 
+  # Entropy weighting configuration
+  entropy_weighting: False
+  entropy_temperature: 1.0
+  entropy_weighting_version: "v4"  # v1, v1_norm, v2, v2sqrt, v4, v5_epd
+
+  # EPD (Entropy-Preservation Distillation) 熵保护蒸馏
+  epd_lambda: 0.8   # 最大保护强度，∈ [0, 1]
+  epd_tau: 0.5      # Sigmoid 温度，越小保护越尖锐
+
   # Reprompting template - available variables: prompt, successful_previous_attempt, feedback
   reprompt_template: |-
     {prompt}{solution}{feedback}

@@ -138,7 +138,7 @@ trainer:
   experiment_name: gsm8k
 
   # Logging backends to use: "console", "wandb", etc.
-  logger: ["console", "wandb"]
+  logger: ["console", "swanlab"]
 
   # Number of generations to log during validation
   log_val_generations: 0

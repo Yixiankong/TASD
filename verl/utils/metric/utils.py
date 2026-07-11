@@ -22,6 +22,25 @@ import numpy as np
 import torch
 
 
+def _flatten_numeric(val: Any) -> list[Any]:
+    """Recursively flatten nested lists/tuples into a flat list of numeric values.
+
+    When metrics are collected from multiple workers, each worker contributes a list
+    of per-micro-batch values. If workers process different numbers of micro-batches
+    the result is an inhomogeneous nested list like [[v, v, v], [v, v]] which
+    np.mean/np.max/np.min cannot handle.  This helper flattens it to [v, v, v, v, v].
+    """
+    flat: list[Any] = []
+    stack = [val]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, (list, tuple)):
+            stack.extend(reversed(item))
+        else:
+            flat.append(item)
+    return flat
+
+
 def reduce_metrics(metrics: dict[str, Union["Metric", list[Any]]]) -> dict[str, Any]:
     """
     Reduces a dictionary of metric lists by computing the mean, max, or min of each list.
@@ -49,12 +68,17 @@ def reduce_metrics(metrics: dict[str, Union["Metric", list[Any]]]) -> dict[str, 
     for key, val in metrics.items():
         if isinstance(val, Metric):
             metrics[key] = val.aggregate()
-        elif "max" in key:
-            metrics[key] = np.max(val)
-        elif "min" in key:
-            metrics[key] = np.min(val)
         else:
-            metrics[key] = np.mean(val)
+            # Flatten nested lists that arise when per-worker metric lists
+            # have different lengths (e.g. uneven micro-batch counts across GPUs).
+            # np.mean / np.max / np.min all reject inhomogeneous nested sequences.
+            flat = _flatten_numeric(val)
+            if "max" in key:
+                metrics[key] = np.max(flat)
+            elif "min" in key:
+                metrics[key] = np.min(flat)
+            else:
+                metrics[key] = np.mean(flat)
     return metrics
 
 
